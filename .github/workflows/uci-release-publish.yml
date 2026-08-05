@@ -1,0 +1,34 @@
+name: UCI
+run-name: UCI / Release Publish
+
+# Tags and releases the version in version.json once it lands on main.
+#
+# This is a Go LIBRARY, so the tag IS the release: `go get` resolves a version
+# from the module proxy, which reads it from the tag. There is no binary to build
+# and nothing to attach, which is why this calls release-publish and stops —
+# unlike the repositories that follow it with goreleaser-release to build a
+# command. If this ever ships an executable, that job goes here.
+#
+# Note that `paths` filters do not apply to tag pushes, so this also fires when a
+# version tag is pushed by hand. That is deliberate and harmless: release-publish
+# checks whether the tag exists and no-ops when it does, so the manual path and
+# the automatic one converge instead of conflicting.
+on:
+  push:
+    paths: [ 'version.json' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Keyed per event and ref, never cancelled. A version.json branch push and a
+  # follow-up manual tag push share a SHA, and cancelling an in-flight release on
+  # the later event would leave a tag without its release.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Release
+    uses: sei-protocol/uci/.github/workflows/release-publish.yml@v0.0.15

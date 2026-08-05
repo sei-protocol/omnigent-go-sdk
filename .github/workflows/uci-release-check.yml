@@ -1,0 +1,31 @@
+name: UCI
+run-name: UCI / Release Check
+
+# Validates a version bump on the pull request that proposes it, before it can
+# reach main. The org's shared implementation lives in sei-protocol/uci; this file
+# only supplies the trigger and the permissions.
+#
+# pull_request_target rather than pull_request, matching the other repositories
+# that use this: the check needs a token that can comment on the pull request,
+# which a fork-originated pull_request run does not get. That makes the trigger
+# privileged, so nothing here checks out or executes pull-request code — the
+# reusable workflow reads version.json through the API at the head SHA rather
+# than from a checkout.
+on:
+  pull_request_target:
+    paths: [ 'version.json' ]
+    types: [ opened, synchronize, reopened, labeled, unlabeled ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-check:
+    name: Release
+    uses: sei-protocol/uci/.github/workflows/release-check.yml@v0.0.15

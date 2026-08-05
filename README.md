@@ -10,6 +10,39 @@ resources, policies, permissions, comments, fork, agent swap) that this package
 does not call.
 
 
+
+## Releasing
+
+Releases are driven by `version.json` through the org's shared workflows in
+[sei-protocol/uci](https://github.com/sei-protocol/uci), the same ones the other
+Go repositories here use. Bump the version, open a pull request, label it
+`release`, and merge — the tag and the GitHub Release follow from the merge.
+
+    { "version": "v0.1.0" }
+
+Two things happen, in this order.
+
+**On the pull request**, `release-check` validates the bump and — the part that
+matters for a library — runs `gorelease` and `gocompat` against the previous
+version. Those are the Go project's own API-compatibility checkers: they compare
+the exported surface to the last tag and say whether the version increment is
+semver-honest. A breaking change under a patch bump is caught before it ships,
+which is worth more here than any artifact would be. The check only proposes a
+tag when the pull request carries a `release` label, so an ordinary bump in a
+feature branch cannot release by accident.
+
+**On merge to main**, `release-publish` reads `version.json`, creates the tag and
+the GitHub Release, and no-ops if the tag already exists. A tag pushed by hand
+converges with the automatic path rather than conflicting with it.
+
+There is deliberately no GoReleaser job. **This module is a library, so the tag
+is the release** — `go get` resolves a version from the module proxy, which reads
+it from the tag, and there is no binary to build or attach. The repositories here
+that do follow release-publish with `goreleaser-release` are shipping a command.
+If this ever ships one, that job belongs in
+`.github/workflows/uci-release-publish.yml`.
+
+
 ## Provenance
 
 This module is maintained by sei-protocol and is **not** an official Omnigent
