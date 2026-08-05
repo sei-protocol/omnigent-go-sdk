@@ -1,0 +1,77 @@
+name: CI
+
+# The whole repository is this one Go module, so these checks ARE the gate rather
+# than an advisory layer beside one. In the monorepo this came from they could not
+# be made required from a pull request — the required-checks list was generated
+# elsewhere — which is a large part of why the SDK now lives here: nothing
+# substantive ever ran on it there.
+#
+# bin/check.sh is the same script a developer runs locally. It is invoked here
+# rather than reimplemented so the two cannot drift.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+
+jobs:
+  test:
+    # The module's declared floor and the current stable release. The floor is
+    # what a consumer may be on, so it is the one that has to keep compiling.
+    name: Go SDK tests (${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.24.x', 'stable']
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: go.sum
+
+      - name: Run the SDK's checks
+        run: bin/check.sh
+
+      # -count=2 defeats the test binary's result caching, which would otherwise
+      # hide a test that only passes on a warm cache.
+      - name: Re-run the tests without caching
+        run: go test ./... -race -count=2
+
+  lint:
+    name: Go SDK lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+
+      # Installed with `go install` rather than golangci-lint's own action so
+      # this workflow pins nothing but the two actions lint.yml already pins.
+      # The version is fixed because a linter release can add findings.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
+      - name: Run golangci-lint
+        run: golangci-lint run
