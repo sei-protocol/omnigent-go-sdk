@@ -22,8 +22,6 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-defaults:
-
 jobs:
   test:
     # The module's declared floor and the current stable release. The floor is
