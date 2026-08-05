@@ -1,0 +1,22 @@
+Copyright (2026) sei-protocol contributors
+
+This Software is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+________________
+
+This Software contains generated code derived from the Omnigent OpenAPI
+specification, which is part of the Omnigent project:
+
+omnigent - https://github.com/omnigent-ai/omnigent
+Copyright (2026) Databricks, Inc.
+Licensed under the Apache License, Version 2.0.
+
+Specifically, models.gen.go and events.gen.go are produced by
+scripts/gen_go_client.py from spec/openapi.json, a vendored copy of that
+project's specification, and reproduce its schema descriptions as Go doc
+comments.
+
+Attribution notices in the upstream project's NOTICE file that pertain to its
+Python runtime dependencies are omitted here, as this Software contains no part
+of them — Apache License 2.0 section 4(d) provides for excluding notices that do
+not pertain to any part of a Derivative Work.
