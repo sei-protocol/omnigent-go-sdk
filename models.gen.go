@@ -505,6 +505,30 @@ func (e RetryEventType) Valid() bool {
 	}
 }
 
+// Defines values for RoutingDecisionDataScope.
+const (
+	RoutingDecisionDataScopeChildSession   RoutingDecisionDataScope = "child_session"
+	RoutingDecisionDataScopeNativeSubagent RoutingDecisionDataScope = "native_subagent"
+	RoutingDecisionDataScopeSession        RoutingDecisionDataScope = "session"
+	RoutingDecisionDataScopeTurn           RoutingDecisionDataScope = "turn"
+)
+
+// Valid indicates whether the value is a known member of the RoutingDecisionDataScope enum.
+func (e RoutingDecisionDataScope) Valid() bool {
+	switch e {
+	case RoutingDecisionDataScopeChildSession:
+		return true
+	case RoutingDecisionDataScopeNativeSubagent:
+		return true
+	case RoutingDecisionDataScopeSession:
+		return true
+	case RoutingDecisionDataScopeTurn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SandboxStatusStage.
 const (
 	SandboxStatusStageCloning      SandboxStatusStage = "cloning"
@@ -2180,12 +2204,33 @@ type RoutingDecisionData struct {
 	// Applied `True` when the brain actually ran on `model` this turn (optimize mode, no user pin); `False` when the router only WOULD have picked it (advise/shadow mode, or a user model pin won) — the UI renders "would have picked".
 	Applied bool `json:"applied"`
 
+	// AttemptedOverride Model the spawning agent asked for and the router overrode, e.g. `"databricks-gpt-5-5"` — an LLM-supplied `args.model` on a child session, or a native spawn's own `requested_model`. `None` when nothing was asked for, or when the router's pick names the same arm as the ask.
+	AttemptedOverride *string `json:"attempted_override,omitempty"`
+
+	// DecisionID Router decision identifier, e.g. `"3f1c…"`. Correlates the transcript item with the routing telemetry event and the child-sessions API row. `None` for decisions made before decision ids existed.
+	DecisionID *string `json:"decision_id,omitempty"`
+
+	// Harness Harness the decision applies to, e.g. `"claude-native"` or `"codex"`. `None` when the decision picked a model only (no harness dimension).
+	Harness *string `json:"harness,omitempty"`
+
 	// Model The concrete brain model the router chose, e.g. `"databricks-claude-opus-4-8"`.
 	Model string `json:"model"`
 
 	// Rationale The router's one-line explanation, shown as muted secondary text, e.g. `"Multi-file refactor needs deep reasoning."`.
 	Rationale string `json:"rationale"`
+
+	// RawModel The router-vocabulary pick before resolution to a servable catalog id, e.g. `"gpt-5-6-sol"`. `None` when the pick needed no resolution.
+	RawModel *string `json:"raw_model,omitempty"`
+
+	// RouterSource Which router produced the decision — `"databricks-aigw"` for the external AI-Gateway `task_v1` service, `"oss-llm"` for the built-in judge. Deliberately a plain `str` rather than a `Literal`: a source added later must still round-trip through stored rows and the wire instead of failing validation. `None` on rows written before the field existed.
+	RouterSource *string `json:"router_source,omitempty"`
+
+	// Scope What the decision governs — `"session"` (auto-harness session routing), `"turn"` (per-turn routing), `"child_session"` (an Omnigent-spawned sub-agent) or `"native_subagent"` (a Task / `spawn_agent` spawn routed inside the harness). Defaults to `"turn"` so rows persisted before this field deserialize.
+	Scope *RoutingDecisionDataScope `json:"scope,omitempty"`
 }
+
+// RoutingDecisionDataScope What the decision governs — `"session"` (auto-harness session routing), `"turn"` (per-turn routing), `"child_session"` (an Omnigent-spawned sub-agent) or `"native_subagent"` (a Task / `spawn_agent` spawn routed inside the harness). Defaults to `"turn"` so rows persisted before this field deserialize.
+type RoutingDecisionDataScope string
 
 // SandboxStatus Managed-sandbox launch progress for a `host_type="managed"` session.
 //
@@ -2509,9 +2554,6 @@ type SessionListItem struct {
 	// Archived Whether the session is archived. Archived sessions are returned by `GET /v1/sessions` only when the request passes `include_archived=true`; the sidebar groups them into a dedicated "Archived" section. `False` for normal sessions.
 	Archived *bool `json:"archived,omitempty"`
 
-	// CanApprove Whether the requesting user may accept privileged actions for this session. `None` when permissions are disabled.
-	CanApprove *bool `json:"can_approve,omitempty"`
-
 	// CommentsCount Total number of review comments (any status) on this session. Together with `comments_updated_at` it forms a change fingerprint: an add or edit bumps the timestamp, a delete changes the count, so the web client can invalidate its cached comment list when either field changes in a `WS /v1/sessions/updates` frame. `0` when the session has no comments or the server has no comment store wired.
 	CommentsCount *int `json:"comments_count,omitempty"`
 
@@ -2773,9 +2815,6 @@ type SessionResponse struct {
 	// BackgroundTaskCount Background shells (claude-native) still running as of the last status edge, so a reload re-shows "N shells still running" even though the session has settled to `"idle"`. `None` (the default / omitted) when no shells are tracked.
 	BackgroundTaskCount *int `json:"background_task_count,omitempty"`
 
-	// CanApprove Whether the requesting user may accept privileged actions for this session. `None` when permissions are disabled.
-	CanApprove *bool `json:"can_approve,omitempty"`
-
 	// ContextWindow The model's context window size in tokens as looked up server-side from litellm's registry (or from the `AP_CONTEXT_WINDOW_OVERRIDE` env var), e.g. `200_000`. `None` when the model is not in litellm's registry and no override is set.
 	ContextWindow *int `json:"context_window,omitempty"`
 
@@ -2871,6 +2910,9 @@ type SessionResponse struct {
 	// SubAgentName For sub-agent sessions, the sub-agent type name within the parent's spec tree, e.g. `"summarizer"`. `None` for top-level sessions.
 	SubAgentName *string `json:"sub_agent_name,omitempty"`
 
+	// SubagentRoutingOverride Per-session subagent-routing switch, two-state: `"on"` routes subagent spawns, and `"off"` or `None` (unset) both leave them unrouted — the in-session "Subagent routing" row renders either as "Default". `None` on a row created before this became explicit inherits nothing. Stamped `"on"` at create for Smart Routing sessions; also set via `PATCH /v1/sessions/{id}`.
+	SubagentRoutingOverride *string `json:"subagent_routing_override,omitempty"`
+
 	// TerminalLaunchArgs Pass-through CLI args the native terminal wrapper (claude / codex) was launched with, e.g. `["--dangerously-skip-permissions"]`. `None` for non-native sessions or a native session launched with none. Lets the launcher reproduce the command on resume.
 	TerminalLaunchArgs []string `json:"terminal_launch_args,omitempty"`
 
@@ -2885,6 +2927,9 @@ type SessionResponse struct {
 
 	// TotalCostUsd Cumulative LLM spend for this session in USD, e.g. `0.42`. `None` when the session is **unpriced** — no turn has been priced yet (the model is absent from the pricing catalog, or no usage has been recorded) — so clients render "—" rather than a misleading `$0.00`. Server-computed (cache-aware for relay/codex, exact billing for claude-native), the same total the cost-budget policy gates on. Lets clients seed their cost indicator on resume without waiting for the next `session.usage` SSE event.
 	TotalCostUsd *float32 `json:"total_cost_usd,omitempty"`
+
+	// UpdatedAt Unix epoch timestamp of the last persisted session activity. Advances when conversation items are appended and on session metadata edits (rename, agent switch, archive); a mid-stall rename therefore resets the clock, so an orchestrator treating this as a pure item-append heartbeat should account for that. Can be compared across snapshots independently of lifecycle status.
+	UpdatedAt *int `json:"updated_at,omitempty"`
 
 	// UsageByModel Per-model breakdown of the same subtree usage, keyed by the raw harness model id, e.g. `{"claude-sonnet-4-6": ModelUsage(input_tokens=12000,...)}`. `None` when no per-model usage has been recorded (older sessions recorded before this field existed, or before the first turn). Lets the UI show which models a session spent its tokens / budget on.
 	UsageByModel map[string]ModelUsage `json:"usage_by_model,omitempty"`
@@ -2977,6 +3022,9 @@ type SessionSkillsEventType string
 // Wire type: "session.status".
 type SessionStatusEvent struct {
 	BackgroundTaskCount *int `json:"background_task_count,omitempty"`
+
+	// BlockedOn Short human phrase naming what a still-`running` session is parked on, e.g. `"permission prompt"` or `"dialog open"`. Set by terminal-backed integrations whose agent can block on a dialog the web UI does not mirror, so the client can say *why* nothing is moving instead of showing a bare spinner. `None` whenever the session is not parked. Unrelated to the `waiting` status above, which means the turn has ended and only background work remains. Category: **transient** (SSE-only). Status is rederived on reconnect from the cached last-relayed turn lifecycle event or by re-querying the runner; not persisted by the runtime.
+	BlockedOn *string `json:"blocked_on,omitempty"`
 
 	// ConversationID The conversation/session identifier whose status changed, e.g. `"conv_abc123"`.
 	ConversationID string `json:"conversation_id"`
@@ -3311,6 +3359,55 @@ type TurnStartedEvent struct {
 
 // TurnStartedEventType Fixed literal `"turn.started"`.
 type TurnStartedEventType string
+
+// UpdateSessionRequest Request body for `PATCH /v1/sessions/{id}`.
+//
+// The Alpha runner-state pivot makes this endpoint the mutable
+// session affinity primitive when `runner_id` is provided. The
+// server validates that the runner is online, then replaces
+// `conversations.runner_id`. Existing session metadata updates
+// remain supported for clients that update title, labels, or
+// reasoning effort through the sessions API.
+type UpdateSessionRequest struct {
+	// Archived New archived state. `True` archives (hides the session from the default sidebar listing), `False` unarchives, `None` leaves unchanged. Owner-only (unlike `title`, which needs only edit access).
+	Archived *bool `json:"archived,omitempty"`
+
+	// CollaborationMode Codex-native collaboration-mode string. `"plan"` enters Plan mode and `"default"` returns to Default mode for subsequent Codex turns. Only valid for sessions stamped with the codex-native wrapper label. Omitted leaves unchanged.
+	CollaborationMode *string `json:"collaboration_mode,omitempty"`
+
+	// CostControlModeOverride Per-session cost-control switch: `"on"` activates the spec's configured cost-control mode, `"off"` disables cost control for this session. Explicit JSON `null` clears the override back to the spec default; omitting the field leaves it unchanged (`"off"` is a real value here, so the field's *presence* — not a clear alias — is the clear signal, unlike `model_override`).
+	CostControlModeOverride *string `json:"cost_control_mode_override,omitempty"`
+
+	// ExternalSessionID Runtime-native session id captured by a wrapper bridge (e.g. Claude Code's session uuid for `omnigent claude` sessions). Idempotent on same-value writes; the server rejects attempts to overwrite an already-set different value with `invalid_input` to surface programmer errors. `None` leaves unchanged.
+	ExternalSessionID *string `json:"external_session_id,omitempty"`
+
+	// Labels Guardrails labels to upsert. Merges with existing labels; keys not present are left untouched.
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// ModelOverride Per-session LLM model override, e.g. `"claude-opus-4-7"`. The value is forwarded as-is to the executor at turn start; the server does not enumerate valid models. Clear aliases such as `"default"`, `"off"`, or `"reset"` remove the override (matching the REPL's `/model` semantics). `None` leaves unchanged.
+	ModelOverride *string `json:"model_override,omitempty"`
+
+	// ProjectID File this session into a first-class project (see `designs/PROJECTS_PRD.md`). A non-empty id moves the session into that project; the empty string `""` unfiles it. **Omitting** the field leaves membership unchanged; an explicit `null` is rejected (400) so it can't silently unfile. Owner-only: because projects are owner-private, only the session owner may file it, and only into a project they own — the server verifies both. Independent of the legacy `omni_project` label, which is set via `labels`.
+	ProjectID *string `json:"project_id,omitempty"`
+
+	// ReasoningEffort Per-session reasoning-effort hint. Accepted metadata values are `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, and `"max"`. Provider-specific support is validated when a turn executes. Clear aliases such as `"default"` remove the session override. `None` leaves unchanged.
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+
+	// RunnerID Identifier of a registered runner, e.g. `"runner_abc123"`. `None` leaves runner binding unchanged.
+	RunnerID *string `json:"runner_id,omitempty"`
+
+	// Silent When `True`, persist metadata changes but skip the runner-side side effects — specifically the native `/effort` / `/model` / Codex collaboration-mode forwards into the live runtime. Used by automatic bind-time handoffs (web's sticky-pref apply on session switch, the REPL's pre-create `/model` snapshot) where injecting a visible slash command into a freshly-spawned pane would render as an unexpected "Command model X" item before the user has sent anything. Default `False` preserves the user-driven picker / `/model` behaviour where the live forward IS the desired feedback.
+	Silent *bool `json:"silent,omitempty"`
+
+	// SubagentRoutingOverride Per-session subagent-routing switch: `"on"` routes subagent spawns, `"off"` leaves them unrouted. Explicit JSON `null` clears the override, which lands the session on Default (the same behavior as `"off"` — nothing is inherited); omitting the field leaves it unchanged (same presence-is-the-clear-signal rule as `cost_control_mode_override`). Effective on the next spawn, so it can be changed at any point in a session.
+	SubagentRoutingOverride *string `json:"subagent_routing_override,omitempty"`
+
+	// TerminalLaunchArgs Per-session native-terminal pass-through args, e.g. `["--dangerously-skip-permissions"]`. A list (including `[]`) replaces the stored value wholesale — resume is last-write-wins, never an append. Bounds (count / length) are validated server-side. `None` leaves unchanged.
+	TerminalLaunchArgs []string `json:"terminal_launch_args,omitempty"`
+
+	// Title New title, e.g. `"debugging auth flow"`. `None` leaves unchanged.
+	Title *string `json:"title,omitempty"`
+}
 
 // Usage Token usage statistics for a response.
 type Usage struct {

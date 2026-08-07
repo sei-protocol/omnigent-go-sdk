@@ -89,11 +89,15 @@ from typing import Any
 
 # Repo root (this file lives in ``scripts/``).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_SPEC = Path("openapi.json")
-_GO_DIR = Path("sdks/go-client")
-_CONFIG = _GO_DIR / "oapi-codegen.yaml"
-_MODELS = _GO_DIR / "models.gen.go"
-_EVENTS = _GO_DIR / "events.gen.go"
+# Paths are this module's own layout: the spec is vendored under spec/ and the
+# package sits at the repo root. They were the Omnigent monorepo's layout when
+# this script was contributed there, which pointed the generator at files this
+# repository does not have -- so it could not run here, and the committed
+# bindings drifted from the spec beside them.
+_SPEC = Path("spec/openapi.json")
+_CONFIG = Path("oapi-codegen.yaml")
+_MODELS = Path("models.gen.go")
+_EVENTS = Path("events.gen.go")
 _OUTPUTS = (_MODELS, _EVENTS)
 
 # The union whose discriminator drives events.gen.go, and whose members are the
@@ -125,6 +129,10 @@ _HANDWRITTEN_ROOTS = (
     # Element type of the sessions listing, `Page[SessionListItem]`, from
     # GET /v1/sessions.
     "SessionListItem",
+    # Body of UpdateSession. Generated rather than hand-written because the
+    # route is in openapi.json, which puts its fields under the drift gate --
+    # unlike the events route's bodies, which the server hides from the schema.
+    "UpdateSessionRequest",
 )
 
 _REGEN_HINT = "  python scripts/gen_go_client.py"

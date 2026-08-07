@@ -51,6 +51,38 @@ jobs:
       - name: Re-run the tests without caching
         run: go test ./... -race -count=2
 
+  generated:
+    # The generated bindings and the spec they come from are committed side by
+    # side, so nothing about reading the repository reveals that one was refreshed
+    # without the other. That is not hypothetical: the seeded models were a spec
+    # older than the one vendored beside them, and the field the newer spec added
+    # was missing from the struct for as long as nothing re-ran the generator.
+    #
+    # Its own job rather than a step in bin/check.sh, which is deliberately
+    # limited to what the Go toolchain already provides; this needs python and
+    # oapi-codegen. The generator is fail-closed on a missing tool, and it ignores
+    # the local skip variable in CI, so this cannot pass by not running.
+    name: Go SDK generated bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Install Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+
+      # Pinned because a generator release can change the emitted code, which
+      # would fail this check on a repository nobody touched.
+      - name: Install oapi-codegen
+        run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.6.0
+
+      - name: Verify the bindings match the vendored spec
+        run: python3 scripts/gen_go_client.py --check
+
   lint:
     name: Go SDK lint
     runs-on: ubuntu-latest

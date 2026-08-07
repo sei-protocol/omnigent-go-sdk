@@ -64,8 +64,11 @@ package omnigent
 //
 // A terminal-backed harness (claude-native) emits no response.completed at all;
 // its turn boundaries are session.* only. The server reads a Status of "idle" or
-// "failed" as "no turn is active", but idle is not by itself a turn-end there —
-// claude-native also goes idle mid-turn while parked on a permission prompt.
+// "failed" as "no turn is active", but idle is not by itself a turn-end there:
+// only the edge that names a ResponseID names the turn it ended, so that field
+// is the discriminator and the status alone is not. A session parked on a
+// permission prompt reports "running" and names what it waits on in BlockedOn,
+// which is what a consumer explaining a stalled turn reads.
 //
 // In both cases nothing about the transport goes quiet while a consumer waits
 // for a terminal that is not coming: the keepalive [SessionHeartbeatEvent] holds
