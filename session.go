@@ -238,6 +238,22 @@ type EventAccepted struct {
 	// PendingID identifies a native-terminal message's optimistic placeholder,
 	// which the consume event later clears. Usually empty.
 	PendingID string `json:"pending_id,omitempty"`
+
+	// Denied reports that the server handled this input synchronously by
+	// refusing it, rather than queueing a turn for it. It is the difference
+	// between the two reasons Queued can be false: a control input queues
+	// nothing by design, while a denied one was rejected and says why in
+	// [EventAccepted.Reason].
+	Denied bool `json:"denied,omitempty"`
+
+	// Reason is the server's explanation for a denial, e.g.
+	// "Denied by policy". Empty unless Denied.
+	//
+	// Worth reading rather than discarding: without it a refused send is
+	// indistinguishable from a control input, and a caller that treats every
+	// unqueued send the same way reports "the server accepted this without
+	// queueing it" when the server had already said exactly what was wrong.
+	Reason string `json:"reason,omitempty"`
 }
 
 // GetSessionOptions tunes what a snapshot includes. A nil field lets the server
