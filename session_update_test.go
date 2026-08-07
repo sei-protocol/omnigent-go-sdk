@@ -104,6 +104,91 @@ func TestUpdateSessionSendsOnlyTheFieldsSet(t *testing.T) {
 	}
 }
 
+// TestUpdateSessionDecodesTheUpdatedSnapshot checks the response is read, not
+// just the request written. The snapshot a PATCH returns is the caller's
+// confirmation of what the field became, so a decode that quietly produced a
+// zero value would leave them acting on their own request rather than on the
+// server's answer.
+func TestUpdateSessionDecodesTheUpdatedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(
+			`{"id":"conv_1","object":"session","status":"idle","archived":true,` +
+				`"updated_at":1754600000,"labels":{"pr":"3870"}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	session, err := client.UpdateSession(
+		context.Background(), "conv_1", UpdateSessionRequest{Archived: Ptr(true)})
+	if err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	if session.Archived == nil || !*session.Archived {
+		t.Errorf("Archived = %v, want the server's true", session.Archived)
+	}
+	// The field the vendored spec carried while the struct did not. Asserted
+	// here so a regeneration that drops it again fails a test rather than
+	// silently returning nil to a caller comparing snapshots.
+	if session.UpdatedAt == nil || *session.UpdatedAt != 1754600000 {
+		t.Errorf("UpdatedAt = %v, want 1754600000", session.UpdatedAt)
+	}
+	if got := session.Labels["pr"]; got != "3870" {
+		t.Errorf("Labels[pr] = %q, want %q", got, "3870")
+	}
+}
+
+// TestUpdateSessionClassifiesAServerRefusal checks a refused update is a typed
+// error rather than a zero snapshot. Both refusals are ordinary here: archiving
+// is owner-only, so a collaborator's PATCH is a 403, and a session retired by
+// something else is a 404.
+func TestUpdateSessionClassifiesAServerRefusal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		status  int
+		wantErr error
+	}{
+		{name: "owner-only archive refuses a collaborator", status: http.StatusForbidden, wantErr: ErrForbidden},
+		{name: "a session retired elsewhere is gone", status: http.StatusNotFound, wantErr: ErrNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"detail":"nope"}`))
+			}))
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			session, err := client.UpdateSession(
+				context.Background(), "conv_1", UpdateSessionRequest{Archived: Ptr(true)})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want one matching %v", err, tc.wantErr)
+			}
+			if session != nil {
+				t.Errorf("session = %+v, want nil beside an error", session)
+			}
+			if got := err.Error(); !strings.Contains(got, "update session conv_1") {
+				t.Errorf("error = %q, want it to name the call and the session", got)
+			}
+		})
+	}
+}
+
 // TestUpdateSessionRequiresASessionID checks the call that cannot produce a
 // meaningful request is refused before one is sent. An empty id would otherwise
 // PATCH the sessions collection.

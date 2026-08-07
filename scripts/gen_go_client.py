@@ -1,9 +1,8 @@
 """Generate the Go SDK's bindings from the checked-in ``openapi.json``.
 
-``openapi.json`` is the source of truth external SDK tooling reads (see
-``tests/server/test_openapi_drift.py``, which pins it byte-for-byte to the live
-FastAPI app). This script turns it into the two generated files the Go module at
-``sdks/go-client`` ships:
+``spec/openapi.json`` is a vendored snapshot of the server's contract; see
+``spec/README.md`` for where it comes from and how to refresh it. This script
+turns it into the two generated files this module ships:
 
 - ``models.gen.go`` — the Go types for the schemas this SDK's surface needs,
   emitted by ``oapi-codegen`` (models only: no client, no server, no spec blob).
@@ -830,7 +829,7 @@ def _generate(out_dir: Path) -> None:
         raise SystemExit(
             f"{_UNION} variants absent from the generated models: "
             f"{', '.join(sorted(set(missing)))}\n"
-            "Check sdks/go-client/oapi-codegen.yaml still sets `skip-prune: true` — with\n"
+            "Check oapi-codegen.yaml still sets `skip-prune: true` — with\n"
             "no operations left to generate, pruning would strip every schema."
         )
 

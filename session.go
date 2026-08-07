@@ -356,6 +356,15 @@ func (c *Client) GetSession(
 // sandbox bound to the session. Archiving through UpdateSessionRequest.Archived
 // leaves all of that readable and reusable. Reach for delete when the compute
 // has to stop, and for Archived when only the bookkeeping has to change.
+//
+// Like [Client.SendInput] this carries a body, so a method-rewriting redirect
+// would drop the write and decode the resulting GET as if the update had
+// landed. It fails with [ErrUnsafeRedirect] instead.
+//
+// A field this cannot express is an explicit null. Absent and null are the same
+// on the wire here, so the overrides whose spec documents null as "clear back to
+// the default" — CostControlModeOverride, SubagentRoutingOverride — can be set
+// and not cleared.
 func (c *Client) UpdateSession(
 	ctx context.Context,
 	sessionID string,

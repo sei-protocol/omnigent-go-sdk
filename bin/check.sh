@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Everything enforced about the Go module, in one place: `just go-sdk-test` and
-# the Lint workflow's required `Pre-commit checks` job both run this script, so
-# what a contributor runs locally cannot drift from what gates the PR.
+# Everything enforced about the Go module, in one place: a contributor runs this
+# directly and CI's test job runs the same script, so what passes locally cannot
+# drift from what runs on the pull request.
+#
+# The generated-bindings check is deliberately NOT here: it needs python and
+# oapi-codegen, and this script sticks to the Go toolchain. CI runs it as its own
+# job, so a contributor without python is unimpeded and drift is still caught.
 #
 # golangci-lint is deliberately not here. It needs its own install, and it runs
 # in the advisory Go SDK workflow instead; this script sticks to what the Go

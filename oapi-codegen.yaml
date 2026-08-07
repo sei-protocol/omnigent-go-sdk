@@ -1,4 +1,4 @@
-# Generator config for sdks/go-client's models.gen.go. Regenerate through
+# Generator config for this module's models.gen.go. Regenerate through
 # scripts/gen_go_client.py, which narrows and downgrades openapi.json into a
 # temp dir first and passes `-o` — invoking oapi-codegen directly with this
 # config writes to stdout and skips both steps, so it will not work.
