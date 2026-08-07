@@ -346,6 +346,41 @@ func (c *Client) GetSession(
 	return &session, nil
 }
 
+// UpdateSession changes a session's metadata and returns its updated snapshot.
+// Only the fields set on req are sent, so an unset one is left alone rather
+// than cleared.
+//
+// This is the non-destructive counterpart to [Client.DeleteSession], and the
+// two are not interchangeable for retiring a finished unit of work. Delete
+// cascades: the conversation's items and labels go with it, and so does the
+// sandbox bound to the session. Archiving through UpdateSessionRequest.Archived
+// leaves all of that readable and reusable. Reach for delete when the compute
+// has to stop, and for Archived when only the bookkeeping has to change.
+//
+// Like [Client.SendInput] this carries a body, so a method-rewriting redirect
+// would drop the write and decode the resulting GET as if the update had
+// landed. It fails with [ErrUnsafeRedirect] instead.
+//
+// A field this cannot express is an explicit null. Absent and null are the same
+// on the wire here, so the overrides whose spec documents null as "clear back to
+// the default" — CostControlModeOverride, SubagentRoutingOverride — can be set
+// and not cleared.
+func (c *Client) UpdateSession(
+	ctx context.Context,
+	sessionID string,
+	req UpdateSessionRequest,
+) (*SessionResponse, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("update session: %w: sessionID is required", ErrInvalidArgument)
+	}
+	var session SessionResponse
+	segments := []string{"v1", "sessions", sessionID}
+	if err := c.doJSON(ctx, http.MethodPatch, segments, nil, req, &session); err != nil {
+		return nil, fmt.Errorf("update session %s: %w", sessionID, err)
+	}
+	return &session, nil
+}
+
 // DeleteSession deletes a session and the resources bound to it.
 //
 // It requires owner-level access, so it can fail with [ErrForbidden] on a

@@ -1,10 +1,10 @@
 // Package omnigent is a Go client for the omnigent server's session API.
 //
-// It reaches seven session calls — create, get, delete, send input, resolve an
-// elicitation, interrupt, and the event stream — plus the agent and session
-// listings. That is a working subset rather than the API: openapi.json publishes
-// dozens of further session operations (items, resources, policies, permissions,
-// comments, fork, agent swap) that this package does not call.
+// It reaches eight session calls — create, get, update, delete, send input,
+// resolve an elicitation, interrupt, and the event stream — plus the agent and
+// session listings. That is a working subset rather than the API: openapi.json
+// publishes dozens of further session operations (items, resources, policies,
+// permissions, comments, fork, agent swap) that this package does not call.
 //
 // # Quickstart
 //
