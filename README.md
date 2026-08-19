@@ -4,7 +4,7 @@ A Go client for the omnigent server.
 
 ## Status: rebuild in progress
 
-This module is being rebuilt to match the shape of the upstream Python client at
+We are rebuilding this module to match the shape of the upstream Python client at
 [omnigent-ai/omnigent](https://github.com/omnigent-ai/omnigent), under
 `sdks/python-client`. That client is an agent-interaction library. This module was
 a typed transport. The rebuild closes the difference.
@@ -52,10 +52,9 @@ bin/check.sh
 ```
 
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
-While the default branch carries no Go, three of the five fail — `go vet` and
-`go test` find no package to act on, and `go mod tidy -diff` reports that tidy
-would strip the whole `require` block. The foundation milestone returns all five
-to green.
+The foundation milestone returns all five to green. Before it lands, three fail:
+`go vet` and `go test` find no package to act on, and `go mod tidy -diff` reports
+that tidy would strip the whole `require` block.
 
 ## Releasing
 
@@ -63,18 +62,18 @@ to green.
 [sei-protocol/uci](https://github.com/sei-protocol/uci).
 
 **A change to `version.json` merged to the default branch cuts a tag and a GitHub
-Release.** There is no label gate on that path — the `release` label is read only
+Release.** No label gates that path. The workflow reads the `release` label only
 when the push lands somewhere other than the default branch. Treat a version bump
 as the release itself, not as a proposal.
 
 On a pull request, `release-check` runs `gorelease` and `gocompat` against the
-previous tag to say whether the version increment is semver-honest. Two limits are
-worth knowing: it runs only when the pull request changes `version.json`, and it
-reads the base branch rather than the pull request's own head.
+previous tag. Together they say whether the version increment is semver-honest.
+Two limits are worth knowing. It runs only when the pull request changes
+`version.json`, and it reads the base branch rather than the pull request's head.
 
-There is no GoReleaser job, deliberately. This module is a library, so the tag is
-the release: `go get` resolves a version from the module proxy, which reads it from
-the tag, and there is no binary to attach.
+This module ships no GoReleaser job, deliberately. It is a library, so the tag is
+the release. `go get` resolves a version from the module proxy, and the proxy reads
+it from the tag. No binary needs attaching.
 
-A published version is immutable. The module proxy serves it and `sum.golang.org`
-has recorded its hash, so a release can never be withdrawn.
+A published version is immutable. The module proxy serves it, and `sum.golang.org`
+has recorded its hash. Nobody can withdraw a release.
