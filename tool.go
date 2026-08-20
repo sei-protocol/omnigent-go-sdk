@@ -71,8 +71,8 @@ func (r *ToolRegistry) Register(name string, schema map[string]any, run ToolFunc
 		return fmt.Errorf("register tool %q: %w: run is nil", name, ErrInvalidArgument)
 	}
 	// A caller can write &ToolRegistry{} — the type is exported — and a nil map
-	// write panics. The read paths already tolerate a nil receiver; the zero value
-	// was the case they missed.
+	// write panics. The read paths tolerate a nil receiver; this covers the zero
+	// value, which they do not.
 	if r.tools == nil {
 		r.tools = map[string]ToolFunc{}
 		r.schemas = map[string]map[string]any{}

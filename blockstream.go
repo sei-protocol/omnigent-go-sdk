@@ -21,7 +21,7 @@ const defaultTextFlushThreshold = 30
 //
 // The wire is not a rendering model. Text arrives as deltas, reasoning as a
 // second delta channel, a tool call and its result as two heterogeneous items,
-// and one turn's tool loop reaches a terminal response once per iteration. This
+// and a tool loop's passes all report under one response. This
 // turns that into [Block] values a switch is worth writing over.
 //
 // A BlockStream holds configuration only. Every call to [BlockStream.Blocks]

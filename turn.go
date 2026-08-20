@@ -13,19 +13,25 @@ import (
 type TurnEnd int
 
 const (
-	// TurnEndsOnIdleStatus ends a turn on an idle status edge that names a
-	// response. The response lifecycle means only that the prompt reached the
-	// harness, so a terminal there is not the answer.
+	// TurnEndsOnIdleStatus ends a turn on an idle status edge that names a response.
+	//
+	// For the harness family that drives a real terminal, where a response terminal
+	// means only that the prompt reached the harness, so a terminal there is not the
+	// answer.
 	//
 	// This is the zero value on purpose. A harness this package does not recognise
 	// gets the stricter rule, because the two mistakes do not cost the same: taking
 	// a lifecycle terminal early hands the caller a partial answer it believes is
 	// whole, while waiting for an edge that never comes blocks the read.
 	//
-	// Blocks, not times out. The server's heartbeat keeps the stream's idle
-	// watchdog fed, so the wrong choice here produces no error of its own: give
-	// [Chat.Send] a context with a deadline, because that deadline is the only
-	// signal this mistake generates.
+	// Blocks, not times out. The server's heartbeat keeps the stream's idle watchdog
+	// fed, so the wrong choice here produces no error of its own while the stream
+	// stays up. Give [Chat.Send] a context with a deadline, sized to the longest
+	// turn this agent may legitimately take rather than to an RPC.
+	//
+	// Without one the read blocks until the stream itself ends, and a deployment
+	// that caps stream duration then reports [ErrTurnIncomplete] — which says
+	// nothing about this option being the wrong one.
 	//
 	// The symptom is a turn that never ends while the session's status events carry
 	// no response id. That means the harness is in-process, and
@@ -59,7 +65,13 @@ type TurnOptions struct {
 	// indistinguishable from this turn's, and taken as this turn's it ends the read
 	// early against another turn's reply.
 	//
-	// Read once, at the start. A caller obtains them from the session snapshot.
+	// Read once, at the start. Build it from [Sessions.Get]:
+	// [SessionResponse.ActiveResponseID] names the response in flight, which is the
+	// one that can reach a terminal inside this turn's window. A session with
+	// nothing in flight needs no entry.
+	//
+	// Only an entry whose value is true counts, so a map built with false values
+	// gives no protection.
 	PriorResponseIDs map[string]bool
 }
 
@@ -121,6 +133,11 @@ func newTurnTracker(opts TurnOptions, sessionID string) *turnTracker {
 //
 // An edge naming no session is taken: the server reports a session-level fault that
 // way, and refusing it would drop the failure a caller is waiting on.
+//
+// A tracker with no session of its own also takes every edge. Only [Chat] builds
+// one, and it refuses an empty session id, so that clause is unreachable from the
+// public surface — it is here so a direct construction in a test cannot silently
+// filter everything out.
 func (t *turnTracker) describesThisSession(conversationID string) bool {
 	return conversationID == "" || t.sessionID == "" || conversationID == t.sessionID
 }

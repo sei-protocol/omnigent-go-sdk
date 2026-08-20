@@ -12,9 +12,9 @@
 // server's cursor, and [Sessions.ChildrenTree] walks a subtree under bounds the
 // caller sets.
 //
-// It also carries the turn loop. [Client.Chat] posts a prompt and reads until the
-// turn ends, running the tools in a [ToolRegistry] and answering the approvals the
-// server raises. [BlockStream] folds those events into the [Block] set a renderer
+// It also carries the turn loop. [Client.Chat] binds a chat to one session, and
+// [Chat.Send] posts a prompt and reads until the turn ends, running the tools in a
+// [ToolRegistry] and answering the approvals the server raises. [BlockStream] folds those events into the [Block] set a renderer
 // switches over, and the transforms in transform.go drop or merge parts of it.
 //
 // A caller who wants the answer rather than the sequence uses [Chat.Query], which
@@ -127,8 +127,8 @@
 // supplies [StreamHooks.OnElicitation]; a hook that panics also declines.
 //
 // One obligation is the caller's. A session that may have a response still running
-// needs [TurnOptions.PriorResponseIDs], the responses already on it when the prompt
-// goes out. Without them a response that predates this turn can end this read, and
+// needs [TurnOptions.PriorResponseIDs], built from [Sessions.Get] — its
+// [SessionResponse.ActiveResponseID] names the response in flight. Without them a response that predates this turn can end this read, and
 // the caller gets another turn's ending. Give [Chat.Send] a context with a deadline
 // too: [TurnEndsOnIdleStatus] waits for an edge that a mismatched harness never
 // sends, and the stream's heartbeat means no timeout of this package's fires.
@@ -254,6 +254,6 @@
 // routine rather than exceptional — some deployments cap HTTP stream duration at
 // a few minutes.
 //
-// This package does not reach the snapshot route yet; call it directly until the
-// session surface lands.
+// Recover by fetching the snapshot with [Sessions.Get], opening a fresh stream, and
+// deduping the persisted items from [Sessions.ListItems] by id.
 package omnigent

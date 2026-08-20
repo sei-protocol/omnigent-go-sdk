@@ -18,8 +18,8 @@ import "time"
 // rather than a proof. Give a switch over the variants a default arm regardless:
 // the set grows when the rendering does.
 type Block interface {
-	// Context reports which agent produced this block, how deep it sits, and which
-	// turn it belongs to.
+	// Context reports which agent produced this block, how deep that agent sits, and
+	// which tool-loop iteration the block came from.
 	//
 	// A single-agent caller ignores it. One rendering a sub-agent tree routes on it,
 	// which is why it is on the interface rather than on each variant.
@@ -52,10 +52,10 @@ type BlockContext struct {
 // blockCtx embeds into every variant, so each carries the context and satisfies
 // the seal without restating either.
 //
-// Its field is unexported. Exported, it was promoted to every variant — settable
-// from outside the package, so a caller could rewrite what [Block.Context] reports,
-// and marshalled as an untagged "Ctx" key into any transcript a caller persisted.
-// go doc showed neither, which is what made it a surface nobody chose.
+// Its field is unexported. Exported, it would promote into every variant: a caller
+// could rewrite what [Block.Context] reports, and it would marshal as an untagged
+// "Ctx" key into any transcript a caller persisted. go doc shows neither, so that is
+// a surface nobody would choose.
 type blockCtx struct {
 	ctx BlockContext
 }
@@ -254,7 +254,8 @@ type FileBlock struct {
 
 // ResponseEndBlock reports that the response reached a terminal state.
 //
-// One arrives per tool-loop iteration, not only at the end of the turn. A caller
+// One arrives per response. A sequence spanning several turns therefore carries
+// several, and a caller
 // that wants the last one alone applies [SkipIntermediateEnds].
 type ResponseEndBlock struct {
 	blockCtx

@@ -279,7 +279,8 @@ func (r *turnRun) observe(ctx context.Context, event Event) {
 func (r *turnRun) endResponse(response ResponseObject, detail error) {
 	fire(r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
 	r.tracker.observeResponseTerminal(response.ID, detail)
-	// A terminal response that did not end the turn was a tool-loop iteration.
+	// Counts passes for the payloads that report one. A turn reaches one terminal
+	// response, so this advances only if that response did not end the turn.
 	r.iteration++
 }
 

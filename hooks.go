@@ -2,20 +2,22 @@ package omnigent
 
 // StreamHooks observes a turn's lifecycle without reading raw events.
 //
-// Every field is optional; a nil hook is skipped. Hooks are called from the
-// goroutine draining the turn, in event order, so a hook that blocks holds the
-// turn up — which is what makes them suitable for a progress display and not for
-// work of their own.
+// Every field is optional; a nil hook is skipped. Hooks run on the caller's own
+// goroutine, in event order — this package starts none — so a hook that blocks
+// holds the turn up. That is what makes them suitable for a progress display and
+// not for work of their own.
 //
-// A hook cannot change the turn. Blocks are what a caller renders and
-// [ToolRegistry] is what a caller runs; these are for the side effects that
-// belong to neither, such as a spinner or a metric.
+// Every hook but one only observes. [StreamHooks.OnElicitation] is the exception:
+// its answer authorises a pending tool to run. The rest cannot change the turn —
+// blocks are what a caller renders and [ToolRegistry] is what a caller runs, so
+// these are for the side effects that belong to neither, such as a spinner or a
+// metric.
 type StreamHooks struct {
 	// OnResponseStart fires once per response, when the server announces it.
 	OnResponseStart func(ResponseStartCtx)
 
-	// OnResponseEnd fires when a response reaches a terminal state. A tool loop
-	// reaches one per iteration, so this fires more than once per turn.
+	// OnResponseEnd fires when a response reaches a terminal state, which is once
+	// per turn: a tool loop's passes all report under the one response.
 	OnResponseEnd func(ResponseEndCtx)
 
 	// OnToolCallStart fires when the agent calls a tool, server-run or client-run.
