@@ -9,8 +9,8 @@ import (
 
 // TestTheZeroRegistryIsUsable pins that a legal construction does not panic.
 //
-// ToolRegistry is exported, so &ToolRegistry{} is something a caller writes. The
-// read paths tolerated a nil receiver; a nil map write did not.
+// ToolRegistry is exported, so &ToolRegistry{} is something a caller writes, and
+// Register has to make its maps.
 func TestTheZeroRegistryIsUsable(t *testing.T) {
 	t.Parallel()
 

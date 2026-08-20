@@ -30,11 +30,20 @@ type Block interface {
 
 // BlockContext is the metadata every [Block] carries.
 type BlockContext struct {
-	// Agent names the agent that produced the block, e.g. "coder.researcher".
-	// Empty for the root agent.
+	// Agent names the agent that produced the block, e.g. "coder.researcher". It is
+	// the response's model, which the description defines as the agent that produced
+	// it — so a root agent reports its own name rather than an empty one.
+	//
+	// Empty only before any response has been announced, which is where an
+	// [ErrorBlock] or [RetryBlock] can arrive.
 	Agent string
 
-	// Depth is how deep that agent sits in the sub-agent tree. Zero is the root.
+	// Depth is how deep that agent sits in the sub-agent tree, counted from the dots
+	// in [BlockContext.Agent]: upstream derives it the same way.
+	//
+	// A convention rather than a declared field. The description does not say a dot
+	// in an agent name means nesting, so a name that carries one for another reason
+	// reports a depth it does not have. Route on Agent when that matters.
 	Depth int
 
 	// Iteration counts tool-loop passes within the turn. A loop that runs three
@@ -52,10 +61,10 @@ type BlockContext struct {
 // blockCtx embeds into every variant, so each carries the context and satisfies
 // the seal without restating either.
 //
-// Its field is unexported. Exported, it would promote into every variant: a caller
-// could rewrite what [Block.Context] reports, and it would marshal as an untagged
-// "Ctx" key into any transcript a caller persisted. go doc shows neither, so that is
-// a surface nobody would choose.
+// Its field is unexported, so [Block.Context] is the only way to read a block's
+// context and nothing can write one. An exported field would promote into every
+// variant — settable from outside the package, and marshalled as an untagged "Ctx"
+// key into a persisted transcript — neither of which go doc would show.
 type blockCtx struct {
 	ctx BlockContext
 }
@@ -114,15 +123,18 @@ type ToolExecution struct {
 	Output *string
 }
 
-// ToolGroup is the batch of tool calls from one iteration.
+// ToolGroup is a tool call, with room for the batch the wire does not yet group.
+//
+// The fold reports one call per group, because the server delivers one item per
+// call and nothing in the item says which calls were issued together. A renderer
+// should therefore expect a run of single-execution groups rather than one group
+// per iteration, and range Executions rather than indexing it.
 type ToolGroup struct {
 	blockCtx
 
-	// Executions are the calls in this batch, in the order the server reported them.
+	// Executions are the calls in this group, in the order the server reported them.
+	// One, until the wire distinguishes a batch.
 	Executions []ToolExecution
-
-	// Iteration counts tool-loop passes within the response.
-	Iteration int
 }
 
 // ToolResultBlock is one tool's result, emitted when the tool finishes.

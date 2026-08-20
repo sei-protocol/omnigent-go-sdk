@@ -380,10 +380,9 @@ func TestAnApprovalGoesToTheSessionTheRequestNames(t *testing.T) {
 // TestNothingIsPostedUntilTheSubscriptionIsLive pins the ordering the whole read
 // depends on, by its consequence rather than by arrival order.
 //
-// An earlier version of this test recorded which HTTP request reached the server
-// first. That assertion is satisfied by any mechanism that happens to be fast,
-// including a bare sleep, so it could not see the invariant it was named for. These
-// two cases can only pass if the prompt is posted from the subscription itself.
+// Asserted by consequence rather than by arrival order: an ordering assertion holds
+// for any mechanism that happens to be fast, including a bare sleep. These two cases
+// pass only if the prompt is posted from the subscription itself.
 func TestNothingIsPostedUntilTheSubscriptionIsLive(t *testing.T) {
 	t.Parallel()
 
@@ -505,10 +504,10 @@ func TestOneCallIDRunsAToolOnce(t *testing.T) {
 // TestBreakingOnAnErrorDoesNotPanic pins the range-over-func contract across the
 // side effects, which yield too.
 //
-// A caller writing "if err != nil { break }" is the ordinary case. When a side
-// effect ignored yield's false return and the loop then yielded again, that caller
-// got "range function continued iteration after function for loop body returned
-// false" — a panic in their process, from a library.
+// A caller writing "if err != nil { break }" is the ordinary case. A side effect
+// that ignores yield's false return and lets the loop yield again panics that
+// caller's process with "range function continued iteration after function for loop
+// body returned false".
 func TestBreakingOnAnErrorDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -608,5 +607,211 @@ func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
 
 	if seen.ResponseID != "r7" {
 		t.Errorf("ResponseID = %q, want r7", seen.ResponseID)
+	}
+}
+
+// TestThePromptIsPostedOnAnyFirstFrame pins that the subscription notice does not
+// depend on the first frame being a decodable event.
+//
+// A proxy in front of the server emits a comment keepalive to hold an SSE
+// connection open, so requiring a decoded event made Chat.Send a silent no-op
+// behind any such relay: nothing posted, nothing yielded, and only the caller's own
+// deadline to show for it.
+func TestThePromptIsPostedOnAnyFirstFrame(t *testing.T) {
+	t.Parallel()
+
+	for name, firstFrame := range map[string]string{
+		"a proxy comment keepalive": ": ping\n\n",
+		"an empty data frame":       "data: \n\n",
+		"a frame this build cannot decode": "data: {\"type\":\"session.status\"," +
+			"\"status\":12345}\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var posts atomic.Int64
+			posted := make(chan struct{})
+			var once sync.Once
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/events") {
+					posts.Add(1)
+					once.Do(func() { close(posted) })
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"status":"queued","item_id":"item_1"}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher := w.(http.Flusher)
+				_, _ = fmt.Fprint(w, firstFrame)
+				flusher.Flush()
+				// The turn is sent only once the prompt arrives, so this odd frame is
+				// the only thing on the wire until the hook fires. A fixture that sent
+				// valid frames first would let the hook fire on one of those, and the
+				// test could not see the difference.
+				select {
+				case <-posted:
+				case <-time.After(3 * time.Second):
+					return
+				case <-r.Context().Done():
+					return
+				}
+				for _, frame := range []string{
+					echoFrame,
+					`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+				} {
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
+					flusher.Flush()
+				}
+				<-r.Context().Done()
+			}))
+			defer srv.Close()
+
+			client, err := New(srv.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+
+			chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}})
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			for range chat.Send(ctx, "deploy") {
+			}
+
+			if posts.Load() != 1 {
+				t.Errorf("the prompt was posted %d times behind %s", posts.Load(), name)
+			}
+		})
+	}
+}
+
+// TestACollidingCallIDAcrossAgentsRunsBoth pins that the dispatch guard is scoped to
+// the agent as well as the call.
+//
+// Each agent numbers its own calls, and a sub-agent's items ride an ancestor's
+// stream, so one call id names two calls. Keyed by call alone, one agent's call
+// suppressed another's — and the suppressed one was never answered, parking the very
+// agent the guard exists to protect.
+func TestACollidingCallIDAcrossAgentsRunsBoth(t *testing.T) {
+	t.Parallel()
+
+	call := func(agent string) string {
+		return `{"type":"response.output_item.done","item":{"type":"function_call",` +
+			`"status":"action_required","call_id":"call_1","name":"Echo","agent_name":"` + agent + `"}}`
+	}
+	server, client := newChatServer(t, nil, []string{
+		echoFrame, call("coder.a"), call("coder.b"),
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	})
+
+	tools := NewToolRegistry()
+	var mu sync.Mutex
+	var agents []string
+	if err := tools.Register("Echo", nil, func(_ context.Context, info ToolCallInfo) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		agents = append(agents, info.AgentName)
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for range chat.Send(ctx, "hi") {
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(agents) != 2 {
+		t.Fatalf("ran for %v; two agents each asked for their own call_1", agents)
+	}
+	// Both answered: an unanswered call parks its agent until the deadline.
+	if got := server.postedTypes(); len(got) != 3 {
+		t.Errorf("posted %v, want the prompt and two outputs", got)
+	}
+}
+
+// TestATrueDuplicateRunsOnceAndSaysSo pins the other half: the same agent's same
+// call id runs once, and the drop is reported rather than silent.
+func TestATrueDuplicateRunsOnceAndSaysSo(t *testing.T) {
+	t.Parallel()
+
+	call := `{"type":"response.output_item.done","item":{"type":"function_call",` +
+		`"status":"action_required","call_id":"call_1","name":"Deploy","agent_name":"coder"}}`
+	_, client := newChatServer(t, nil, []string{
+		echoFrame, call, call,
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	})
+	tools := NewToolRegistry()
+	var ran atomic.Int64
+	if err := tools.Register("Deploy", nil, func(context.Context, ToolCallInfo) (string, error) {
+		ran.Add(1)
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var duplicate error
+	for _, err := range chat.Send(ctx, "hi") {
+		if errors.Is(err, ErrToolCallDuplicated) {
+			duplicate = err
+		}
+	}
+	if ran.Load() != 1 {
+		t.Errorf("ran %d times for one call", ran.Load())
+	}
+	if duplicate == nil {
+		t.Error("the duplicate was dropped silently; a caller counting tool use is wrong and unaware")
+	}
+}
+
+// TestAPanicInAnyHookIsReportedAndTheTurnContinues pins that the guard covers every
+// hook, not only the approval one.
+//
+// A panic in OnToolCallStart pre-empts the output post, which parks the session until
+// its deadline — a larger blast radius than the hook that was guarded first.
+func TestAPanicInAnyHookIsReportedAndTheTurnContinues(t *testing.T) {
+	t.Parallel()
+
+	server, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.output_item.done","item":{"type":"function_call",` +
+			`"status":"action_required","call_id":"c1","name":"Echo","agent_name":"coder"}}`,
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	})
+	tools := NewToolRegistry()
+	if err := tools.Register("Echo", nil, func(context.Context, ToolCallInfo) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Tools: tools,
+		Hooks: StreamHooks{OnToolCallStart: func(ToolCallStartCtx) { panic("hook is broken") }},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var reported error
+	for _, err := range chat.Send(ctx, "hi") {
+		if errors.Is(err, ErrHookPanicked) {
+			reported = err
+		}
+	}
+	if reported == nil {
+		t.Error("a panicking hook was not reported")
+	}
+	// The tool still ran and its output still went back, so the session is not parked.
+	if got := server.postedTypes(); len(got) != 2 {
+		t.Errorf("posted %v, want the prompt and the tool output", got)
 	}
 }

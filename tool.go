@@ -71,8 +71,8 @@ func (r *ToolRegistry) Register(name string, schema map[string]any, run ToolFunc
 		return fmt.Errorf("register tool %q: %w: run is nil", name, ErrInvalidArgument)
 	}
 	// A caller can write &ToolRegistry{} — the type is exported — and a nil map
-	// write panics. The read paths tolerate a nil receiver; this covers the zero
-	// value, which they do not.
+	// write panics. The read paths tolerate a nil receiver; the maps are made here so
+	// the zero value works too.
 	if r.tools == nil {
 		r.tools = map[string]ToolFunc{}
 		r.schemas = map[string]map[string]any{}
@@ -120,14 +120,21 @@ func (r *ToolRegistry) lookup(name string) (ToolFunc, bool) {
 // has to answer the server, because the turn is parked on this call: the output
 // carries the reason, and the error tells the caller.
 func (r *ToolRegistry) run(ctx context.Context, info ToolCallInfo) (output string, err error) {
+	// The name comes from the model by way of the server, so its length and bytes
+	// are not the caller's choice. Bounded once, here, for every message below.
+	safeName := sanitizeForError(info.Name, maxToolNameRunes)
+
 	run, known := r.lookup(info.Name)
 	if !known {
-		// Reported to the caller and answered to the server. Leaving it unanswered
-		// parks the turn until its deadline, which reads as a hung agent rather
-		// than as a tool this client does not have.
-		return fmt.Sprintf("error: no tool named %q is registered with this client; registered: %v",
-				info.Name, r.Names()),
-			fmt.Errorf("%w: %q; registered: %v", ErrToolNotRegistered, info.Name, r.Names())
+		// Answered to the server so the turn is not parked, and reported to the
+		// caller because a server asking for a tool nobody registered is a
+		// misconfigured or hostile session.
+		//
+		// The server is told the name it asked for and nothing else. The registry is
+		// the caller's capability surface, and naming it here would let one bogus
+		// call enumerate the lot.
+		return fmt.Sprintf("error: no tool named %q is registered with this client", safeName),
+			fmt.Errorf("%w: %q; registered: %v", ErrToolNotRegistered, safeName, r.Names())
 	}
 
 	defer func() {
@@ -135,14 +142,15 @@ func (r *ToolRegistry) run(ctx context.Context, info ToolCallInfo) (output strin
 		// parked on it. Converted rather than propagated, so one bad tool fails its
 		// own call instead of killing the turn loop and every other tool in it.
 		if recovered := recover(); recovered != nil {
-			output = fmt.Sprintf("error: the tool panicked: %v", recovered)
-			err = fmt.Errorf("%w: tool %q panicked: %v", ErrToolFailed, info.Name, recovered)
+			reason := sanitizeForError(fmt.Sprint(recovered), maxErrorFieldRunes)
+			output = fmt.Sprintf("error: the tool panicked: %s", reason)
+			err = fmt.Errorf("%w: tool %q panicked: %s", ErrToolFailed, safeName, reason)
 		}
 	}()
 
 	output, err = run(ctx, info)
 	if err != nil {
-		return fmt.Sprintf("error: %s", err), fmt.Errorf("%w: tool %q: %w", ErrToolFailed, info.Name, err)
+		return fmt.Sprintf("error: %s", err), fmt.Errorf("%w: tool %q: %w", ErrToolFailed, safeName, err)
 	}
 	return output, nil
 }

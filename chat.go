@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"strings"
 	"sync"
 )
 
@@ -87,9 +88,15 @@ func (c *Chat) Prompt(text string) *Turn {
 // turn on a client tool call: the terminal event only arrives after the parked
 // call is answered. Approvals are answered the same way and for the same reason.
 //
-// Ends when the turn ends, and the subscription closes with it. An error ends the
-// sequence, and [ErrTurnFailed] means the server reported the failure rather than
-// the transport.
+// Ends when the turn ends, and the subscription closes with it.
+//
+// Two classes of error arrive here, and they are not read the same way. A transport
+// failure, a prompt that could not be posted, [ErrTurnFailed] or [ErrTurnSuperseded]
+// end the sequence. A tool that failed, an approval this package could not resolve,
+// a duplicated call and a hook that panicked are reported and the read continues —
+// the turn is still running, and still parked on whatever comes next. Each of those
+// has its own sentinel, so a caller deciding whether to stop matches rather than
+// assuming.
 func (c *Chat) Send(ctx context.Context, text string) iter.Seq2[Event, error] {
 	return c.Prompt(text).Events(ctx)
 }
@@ -155,11 +162,15 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 			run.emit(nil, err)
 			return
 		}
-		run.observe(ctx, event)
-		if run.stopped {
+		run.track(event)
+		if !run.emit(event, nil) {
 			return
 		}
-		if !run.emit(event, nil) {
+		// After the event, so a caller correlating an error with its cause reads them
+		// in that order. Before the end check, because the server parks the turn on a
+		// tool call and an approval, and its terminal only follows once they answer.
+		run.act(ctx, event)
+		if run.stopped {
 			return
 		}
 		if run.tracker.ended() {
@@ -186,11 +197,20 @@ type turnRun struct {
 	tracker *turnTracker
 	yield   func(Event, error) bool
 
-	// dispatched records the calls this turn has run, keyed by call id.
+	// dispatched records the calls this turn has run, keyed by agent and call id.
 	//
 	// The wire delivers one call twice on the MCP path — [BlockStream] folds that
 	// away for a renderer, and this is the same fact on the executing side. Without
 	// it a deploy, a spend or a signature runs twice for one authorisation.
+	//
+	// Keyed by both, because each agent numbers its own calls and a sub-agent's items
+	// ride an ancestor's stream. Keyed by call alone, one agent's call_1 suppressed
+	// another's, and the suppressed call was never answered — which parks the very
+	// agent the guard exists to protect.
+	//
+	// A call that failed cannot be retried under the same key. That is deliberate for
+	// a tool that moves money, and it means a re-delivery after a failed post is
+	// dropped rather than retried.
 	dispatched map[string]bool
 
 	// responseID and iteration say where in the turn we are, for the payloads that
@@ -208,6 +228,12 @@ type turnRun struct {
 // Every yield in a turn goes through here. A side effect that ignored a false
 // return and yielded again would panic in the caller's loop, so no side effect
 // holds the raw yield.
+// report hands an error to the caller and discards whether they are still reading.
+//
+// For a hook's panic, which is a step's own failure rather than the sequence's: the
+// loop checks stopped straight after, so nothing yields twice.
+func (r *turnRun) report(err error) { r.emit(nil, err) }
+
 func (r *turnRun) emit(event Event, err error) bool {
 	if r.stopped {
 		return false
@@ -219,36 +245,52 @@ func (r *turnRun) emit(event Event, err error) bool {
 	return true
 }
 
-// observe advances the tracker and runs the side effects one event calls for.
+// track advances the turn's own state, and nothing else.
 //
-// Ordered deliberately: a tool call and an approval are answered before the turn's
-// end is read, because the server parks the turn on both and the terminal event
-// only follows once they are answered.
-func (r *turnRun) observe(ctx context.Context, event Event) {
-	hooks := r.chat.opts.Hooks
+// Separate from [turnRun.act] because this has to run before the end is read while
+// the side effects have to run after the event they belong to. Nothing here yields,
+// so it cannot be affected by a caller who stopped reading.
+func (r *turnRun) track(event Event) {
 	switch e := event.(type) {
 	case SessionInputConsumedEvent:
 		r.tracker.crossBoundary(e)
-
 	case SessionStatusEvent:
 		r.tracker.observeStatus(e)
-
 	case SessionSupersededEvent:
 		r.tracker.observeSuperseded(e)
-
 	case ResponseCreatedEvent:
 		r.responseID = e.Response.ID
 		r.iteration = 0
-		fire(hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
+	case ResponseCompletedEvent:
+		r.tracker.observeResponseTerminal(e.Response.ID, nil)
+	case ResponseCancelledEvent:
+		r.tracker.observeResponseTerminal(e.Response.ID,
+			fmt.Errorf("%w: the turn was cancelled", ErrTurnFailed))
+	case IncompleteEvent:
+		r.tracker.observeResponseTerminal(e.Response.ID,
+			fmt.Errorf("%w: the response was incomplete", ErrTurnFailed))
+	case ResponseFailedEvent:
+		r.tracker.observeResponseTerminal(e.Response.ID,
+			fmt.Errorf("%w: %s", ErrTurnFailed, responseFailure(e.Response)))
+	}
+}
+
+// act runs the side effects one event calls for: the hooks, the tool this client
+// owns, and the approval the server is waiting on.
+func (r *turnRun) act(ctx context.Context, event Event) {
+	hooks := r.chat.opts.Hooks
+	switch e := event.(type) {
+	case ResponseCreatedEvent:
+		fire(r.report, "OnResponseStart", hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
 
 	case ReasoningStartedEvent:
-		fire(hooks.OnReasoningStart, ReasoningStartCtx{ResponseID: r.responseID})
+		fire(r.report, "OnReasoningStart", hooks.OnReasoningStart, ReasoningStartCtx{ResponseID: r.responseID})
 
 	case RetryEvent:
-		fire(hooks.OnRetry, RetryCtx{Source: e.Source, Attempt: e.Attempt, MaxAttempts: e.MaxAttempts})
+		fire(r.report, "OnRetry", hooks.OnRetry, RetryCtx{Source: e.Source, Attempt: e.Attempt, MaxAttempts: e.MaxAttempts})
 
 	case ErrorEvent:
-		fire(hooks.OnServerError, ServerErrorCtx{
+		fire(r.report, "OnServerError", hooks.OnServerError, ServerErrorCtx{
 			Message: e.Error.Message, Source: e.Source, Code: e.Error.Code,
 		})
 
@@ -257,7 +299,7 @@ func (r *turnRun) observe(ctx context.Context, event Event) {
 		if e.Filename != nil {
 			filename = *e.Filename
 		}
-		fire(hooks.OnFileOutput, FileOutputCtx{FileID: e.FileID, Filename: filename})
+		fire(r.report, "OnFileOutput", hooks.OnFileOutput, FileOutputCtx{FileID: e.FileID, Filename: filename})
 
 	case ElicitationRequestEvent:
 		r.resolveElicitation(ctx, e)
@@ -266,19 +308,18 @@ func (r *turnRun) observe(ctx context.Context, event Event) {
 		r.observeItem(ctx, e)
 
 	case ResponseCompletedEvent:
-		r.endResponse(e.Response, nil)
+		r.endResponse(e.Response)
 	case ResponseCancelledEvent:
-		r.endResponse(e.Response, fmt.Errorf("%w: the turn was cancelled", ErrTurnFailed))
+		r.endResponse(e.Response)
 	case IncompleteEvent:
-		r.endResponse(e.Response, fmt.Errorf("%w: the response was incomplete", ErrTurnFailed))
+		r.endResponse(e.Response)
 	case ResponseFailedEvent:
-		r.endResponse(e.Response, fmt.Errorf("%w: %s", ErrTurnFailed, responseFailure(e.Response)))
+		r.endResponse(e.Response)
 	}
 }
 
-func (r *turnRun) endResponse(response ResponseObject, detail error) {
-	fire(r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
-	r.tracker.observeResponseTerminal(response.ID, detail)
+func (r *turnRun) endResponse(response ResponseObject) {
+	fire(r.report, "OnResponseEnd", r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
 	// Counts passes for the payloads that report one. A turn reaches one terminal
 	// response, so this advances only if that response did not end the turn.
 	r.iteration++
@@ -294,9 +335,11 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 	if itemString(e.Item, "type") != "function_call" {
 		return
 	}
-	callID := itemString(e.Item, "call_id")
-	name := itemString(e.Item, "name")
+	callID := strings.TrimSpace(itemString(e.Item, "call_id"))
+	name := strings.TrimSpace(itemString(e.Item, "name"))
 	if callID == "" || name == "" {
+		// Trimmed first: a call the server cannot be answered about is one this
+		// client must not post an output for, and whitespace is not an identifier.
 		return
 	}
 
@@ -313,14 +356,25 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 		ResponseID: r.responseID,
 		Iteration:  r.iteration,
 	}
-	fire(r.chat.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
+	fire(r.report, "OnToolCallStart", r.chat.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
 		Name: info.Name, CallID: info.CallID, AgentName: info.AgentName,
 		Arguments: info.Arguments, ExecutedBy: executedBy,
 	})
-	if !awaitingClient || r.dispatched[callID] {
+	if !awaitingClient {
 		return
 	}
-	r.dispatched[callID] = true
+	// Keyed by agent as well as call: each agent numbers its own calls, and a
+	// sub-agent's items ride an ancestor's stream, so one call id names two calls.
+	key := info.AgentName + "\x00" + callID
+	if r.dispatched[key] {
+		// The same call, delivered twice. Answered once — and said so, because a
+		// silent drop is indistinguishable from a call this client never saw.
+		r.emit(nil, fmt.Errorf("%w: %s already ran for agent %q",
+			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes),
+			sanitizeForError(info.AgentName, maxAgentNameRunes)))
+		return
+	}
+	r.dispatched[key] = true
 	r.runTool(ctx, info)
 }
 
@@ -331,7 +385,7 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 // turn waits for its deadline and reads as a hung agent.
 func (r *turnRun) runTool(ctx context.Context, info ToolCallInfo) {
 	output, runErr := r.chat.opts.Tools.run(ctx, info)
-	fire(r.chat.opts.Hooks.OnToolCallEnd, ToolCallEndCtx{
+	fire(r.report, "OnToolCallEnd", r.chat.opts.Hooks.OnToolCallEnd, ToolCallEndCtx{
 		Name: info.Name, CallID: info.CallID, Output: output, Err: runErr,
 	})
 
@@ -384,8 +438,12 @@ func (r *turnRun) decideElicitation(e ElicitationRequestEvent) (accept bool) {
 		return false
 	}
 	defer func() {
-		if recover() != nil {
+		if recovered := recover(); recovered != nil {
+			// Declined, and reported. The verdict has to be the safe one, and the
+			// caller has to hear that their policy code failed.
 			accept = false
+			r.report(fmt.Errorf("%w: hook OnElicitation, declined: %s", ErrHookPanicked,
+				sanitizeForError(fmt.Sprint(recovered), maxErrorFieldRunes)))
 		}
 	}()
 	return hook(elicitationCtxOf(r.chat.sessionID, e))

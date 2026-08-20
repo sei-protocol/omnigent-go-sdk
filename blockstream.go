@@ -65,12 +65,9 @@ type blockState struct {
 	// same reasoning twice.
 	reasoningChunked bool
 
-	// pending pairs a tool call awaiting its result, keyed by call id.
-	pending map[string]*ToolExecution
-
-	// executions keeps every call's metadata for the whole turn. Separate from
-	// pending because a result can arrive long after the call, and rendering it
-	// needs the original name and arguments.
+	// executions keeps every call's metadata for the whole turn, because a result can
+	// arrive long after its call and rendering it needs the original name and
+	// arguments.
 	executions map[string]*ToolExecution
 
 	// seenCalls and seenResults suppress the second report of one call.
@@ -97,7 +94,6 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 			threshold:        threshold,
 			yield:            yield,
 			startedResponses: map[string]bool{},
-			pending:          map[string]*ToolExecution{},
 			executions:       map[string]*ToolExecution{},
 			seenCalls:        map[string]bool{},
 			seenResults:      map[string]bool{},
@@ -384,9 +380,6 @@ func (s *blockState) foldToolCall(item map[string]any) {
 	} else {
 		s.executions[callID] = execution
 	}
-	// Re-registered even when already reported, so a result arriving later still
-	// pairs by call id.
-	s.pending[callID] = execution
 	if s.seenCalls[callID] {
 		return
 	}
@@ -394,11 +387,7 @@ func (s *blockState) foldToolCall(item map[string]any) {
 
 	s.closeReasoning()
 	s.closeText()
-	s.put(ToolGroup{
-		blockCtx:   s.at(),
-		Executions: []ToolExecution{*execution},
-		Iteration:  s.ctx.Iteration,
-	})
+	s.put(ToolGroup{blockCtx: s.at(), Executions: []ToolExecution{*execution}})
 }
 
 func (s *blockState) foldToolResult(item map[string]any) {
@@ -416,7 +405,6 @@ func (s *blockState) foldToolResult(item map[string]any) {
 	}
 	execution.Output = &output
 	s.seenResults[callID] = true
-	delete(s.pending, callID)
 	s.put(ToolResultBlock{
 		blockCtx:    s.at(),
 		Name:        execution.Name,

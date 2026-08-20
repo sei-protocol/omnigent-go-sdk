@@ -131,15 +131,28 @@ func newTurnTracker(opts TurnOptions, sessionID string) *turnTracker {
 // names the child's response, and taken as this turn's it ends the read against
 // work that was never this turn's.
 //
-// An edge naming no session is taken: the server reports a session-level fault that
-// way, and refusing it would drop the failure a caller is waiting on.
+// The description marks conversation_id required and non-nullable on a status edge,
+// so an omission is not a conforming server: it is a relay that dropped a field, or
+// a sender hoping an omission reads as consent. Taken only on the failed branch,
+// where dropping it would lose a session-level fault a caller is waiting on, and
+// where ending the turn early is the safe direction anyway.
 //
 // A tracker with no session of its own also takes every edge. Only [Chat] builds
 // one, and it refuses an empty session id, so that clause is unreachable from the
 // public surface — it is here so a direct construction in a test cannot silently
 // filter everything out.
 func (t *turnTracker) describesThisSession(conversationID string) bool {
-	return conversationID == "" || t.sessionID == "" || conversationID == t.sessionID
+	return conversationID == t.sessionID
+}
+
+// couldBeThisSession is describesThisSession relaxed for a failed edge only.
+//
+// A session-level fault is the one case the server reports with no session named,
+// and losing it would leave a caller waiting on a turn that already failed. Ending
+// early on a foreign fault is the safe direction; ignoring this session's own is
+// not.
+func (t *turnTracker) couldBeThisSession(conversationID string) bool {
+	return conversationID == "" || conversationID == t.sessionID
 }
 
 // anchorOn names the identifier the server will echo for this turn's prompt.
@@ -196,11 +209,13 @@ func (t *turnTracker) crossBoundary(e SessionInputConsumedEvent) {
 // reports a session-level fault — a sandbox that never launched among them — and
 // before the boundary that is precisely the failure a caller is waiting on.
 func (t *turnTracker) observeStatus(e SessionStatusEvent) {
-	if !t.describesThisSession(e.ConversationID) {
+	if e.Status == SessionStatusEventStatusFailed {
+		if t.couldBeThisSession(e.ConversationID) {
+			t.observeFailedStatus(e)
+		}
 		return
 	}
-	if e.Status == SessionStatusEventStatusFailed {
-		t.observeFailedStatus(e)
+	if !t.describesThisSession(e.ConversationID) {
 		return
 	}
 	if e.Status != SessionStatusEventStatusIdle || !t.crossed {
@@ -245,7 +260,7 @@ func (t *turnTracker) observeFailedStatus(e SessionStatusEvent) {
 //
 // The terminal naming this turn's response ends it. A tool loop's passes happen
 // inside that one response — which is why the response id holds across them, and why
-// [ToolGroup.Iteration] counts passes rather than responses — so there is one
+// [BlockContext.Iteration] counts passes rather than responses — so there is one
 // terminal to read.
 //
 // The description states no status that would distinguish a pass's terminal from a
@@ -272,6 +287,12 @@ func (t *turnTracker) observeResponseTerminal(responseID string, detail error) {
 // on addressing a dead one. Reported rather than followed: which session to
 // address next is the caller's decision, not this package's.
 func (t *turnTracker) observeSuperseded(e SessionSupersededEvent) {
+	// Filtered like a status edge, and for a sharper reason: this error names the
+	// conversation a caller should move to, so an event from another conversation on
+	// this stream would redirect them to one of its choosing.
+	if !t.describesThisSession(e.ConversationID) {
+		return
+	}
 	t.fail(fmt.Errorf("%w: the session was superseded; its conversation is now %s",
 		ErrTurnSuperseded, sanitizeForError(e.TargetConversationID, maxRequestIDRunes)))
 }

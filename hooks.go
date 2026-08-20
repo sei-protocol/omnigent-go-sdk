@@ -1,5 +1,7 @@
 package omnigent
 
+import "fmt"
+
 // StreamHooks observes a turn's lifecycle without reading raw events.
 //
 // Every field is optional; a nil hook is skipped. Hooks run on the caller's own
@@ -140,10 +142,25 @@ type ElicitationCtx struct {
 	ContentPreview string
 }
 
-// fire calls a hook when one is set. Written once so no caller repeats the nil
-// check, and so adding a hook cannot forget it.
-func fire[T any](hook func(T), ctx T) {
-	if hook != nil {
-		hook(ctx)
+// fire calls a hook when one is set, and turns a panic in it into an error.
+//
+// Written once so no call site repeats either the nil check or the recovery, and so
+// adding a hook cannot forget them. A hook is caller code on the goroutine draining
+// the turn: a panic escaping it ends the read, and one escaping OnToolCallStart
+// pre-empts the output post and parks the session until its deadline.
+//
+// The panic is reported rather than swallowed. A server chooses the fields a hook
+// reads, so it chooses the input that trips one, and an unreported panic is a denial
+// of service with no signal where a caller looks.
+func fire[T any](report func(error), name string, hook func(T), payload T) {
+	if hook == nil {
+		return
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			report(fmt.Errorf("%w: hook %s: %s", ErrHookPanicked, name,
+				sanitizeForError(fmt.Sprint(recovered), maxErrorFieldRunes)))
+		}
+	}()
+	hook(payload)
 }

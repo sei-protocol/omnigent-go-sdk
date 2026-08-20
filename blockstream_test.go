@@ -375,10 +375,8 @@ func TestFormatToolArgsBriefIsStableAndBounded(t *testing.T) {
 
 // TestBlocksCarryTheAgentTheyCameFrom pins the context the fold writes.
 //
-// Nothing wrote Agent or Depth before, so every block reported the root agent and
-// OnlyAgent matched nothing a real stream produced. Driven through the fold rather
-// than through a constructed block, because the previous test for this used an
-// in-package literal no caller — and no production path — can write.
+// Driven through the fold rather than through a constructed block: a block built in
+// the package proves nothing about the context a stream actually produces.
 func TestBlocksCarryTheAgentTheyCameFrom(t *testing.T) {
 	t.Parallel()
 
@@ -403,8 +401,8 @@ func TestBlocksCarryTheAgentTheyCameFrom(t *testing.T) {
 
 // TestOnlyAgentFiltersARealFold pins the transform against data the fold produces.
 //
-// Its own test passed on a synthetic block, so the transform could be — and was —
-// dead against every real stream while looking covered.
+// A synthetic block cannot show the transform matches what a stream produces, which
+// is the only thing that makes the transform useful.
 func TestOnlyAgentFiltersARealFold(t *testing.T) {
 	t.Parallel()
 
@@ -443,10 +441,10 @@ func TestOnlyAgentFiltersARealFold(t *testing.T) {
 // TestABlockCannotBeRewrittenFromOutside pins that Context reports what the fold
 // recorded.
 //
-// The embedded struct's field was exported, so it was promoted to every variant and
-// settable by any caller, and marshalled as an untagged "Ctx" key. This asserts the
-// only remaining path is the accessor.
-func TestABlockCannotBeRewrittenFromOutside(t *testing.T) {
+// A block's context is reachable only through the accessor, and is not marshalled:
+// an exported embedded field would be promoted to every variant and appear as an
+// untagged "Ctx" key in a caller's persisted transcript.
+func TestABlockDoesNotMarshalItsContext(t *testing.T) {
 	t.Parallel()
 
 	encoded, err := json.Marshal(TextChunk{Text: "hi"})

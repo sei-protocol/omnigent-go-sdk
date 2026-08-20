@@ -117,6 +117,22 @@ var (
 	// reasoning and what Go's own rule does instead.
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
 
+	// ErrToolCallDuplicated reports a call the wire delivered twice, which this
+	// client ran once.
+	//
+	// Not a failure: the answer went back for the first delivery. Reported because a
+	// silent drop is indistinguishable from a call this client never saw, and a
+	// caller counting tool use would be quietly wrong.
+	ErrToolCallDuplicated = errors.New("the call was already run")
+
+	// ErrHookPanicked reports that a caller-supplied hook panicked.
+	//
+	// The turn continues, and an approval hook that panics declines. Reported
+	// because the server chooses the fields a hook reads, so it chooses the input
+	// that trips one — and an unreported panic is a denial of service with no signal
+	// where a caller looks.
+	ErrHookPanicked = errors.New("a hook panicked")
+
 	// ErrTurnAlreadyRead reports a second attempt to read one turn.
 	//
 	// Refused rather than repeated: reading again would post the prompt a second

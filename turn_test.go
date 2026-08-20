@@ -403,3 +403,69 @@ func TestSupersededNamesTheReplacementSafely(t *testing.T) {
 		t.Errorf("the replacement conversation was lost: %q", msg)
 	}
 }
+
+// TestASupersededEventFromAnotherConversationIsIgnored pins the filter on the one
+// event whose error names where a caller should go next.
+//
+// Unfiltered, any conversation on the stream could redirect a caller to a
+// conversation of its choosing, and the caller's next prompt would go there.
+func TestASupersededEventFromAnotherConversationIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
+	tr.observeSuperseded(SessionSupersededEvent{
+		Type:                 "session.superseded",
+		ConversationID:       "conv_child",
+		TargetConversationID: "conv_attacker",
+	})
+	if tr.ended() {
+		t.Fatalf("another conversation's supersede ended this turn: %v", tr.failure)
+	}
+
+	tr.observeSuperseded(SessionSupersededEvent{
+		Type:                 "session.superseded",
+		ConversationID:       "conv_1",
+		TargetConversationID: "conv_2",
+	})
+	if !errors.Is(tr.failure, ErrTurnSuperseded) {
+		t.Errorf("this session's own supersede was ignored: %v", tr.failure)
+	}
+}
+
+// TestAnOmittedConversationIDIsNotConsent pins that the filter is not bypassed by
+// leaving out a field the description marks required.
+//
+// An omission is a relay that dropped it, or a sender hoping absence reads as a
+// match. Taken only on the failed branch, where losing a session-level fault would
+// leave a caller waiting on a turn that already failed.
+func TestAnOmittedConversationIDIsNotConsent(t *testing.T) {
+	t.Parallel()
+
+	crossed := func() *turnTracker {
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
+		tr.anchorOn("item_1")
+		tr.crossBoundary(consumed("item_1", nil))
+		return tr
+	}
+
+	t.Run("an idle edge naming no session does not end the turn", func(t *testing.T) {
+		tr := crossed()
+		id := "resp_foreign"
+		e := statusEvent(SessionStatusEventStatusIdle, &id, nil)
+		e.ConversationID = ""
+		tr.observeStatus(e)
+		if tr.ended() {
+			t.Errorf("an omitted conversation id ended the turn on id %q", tr.id)
+		}
+	})
+
+	t.Run("a failure naming no session is still taken", func(t *testing.T) {
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
+		e := statusEvent(SessionStatusEventStatusFailed, nil, &ErrorDetail{Message: "no sandbox"})
+		e.ConversationID = ""
+		tr.observeStatus(e)
+		if !tr.ended() {
+			t.Error("a session-level fault was dropped")
+		}
+	})
+}

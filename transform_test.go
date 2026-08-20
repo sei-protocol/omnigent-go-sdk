@@ -144,7 +144,7 @@ func TestSkipIntermediateEndsKeepsTheLastEndOnly(t *testing.T) {
 	blocks, _ := collectBlocks(t, SkipIntermediateEnds()(blockSeq(
 		TextChunk{Text: "a"},
 		ResponseEndBlock{Status: "completed"},
-		ToolGroup{Iteration: 1},
+		ToolGroup{},
 		ResponseEndBlock{Status: "completed"},
 		TextChunk{Text: "b"},
 		// Consecutive, deliberately: with a block between every end, holding the
@@ -179,7 +179,7 @@ func TestMergeTextAcrossIterationsReportsOneAnswer(t *testing.T) {
 	blocks, _ := collectBlocks(t, MergeTextAcrossIterations()(blockSeq(
 		TextChunk{Text: "one "},
 		TextDone{FullText: "one "},
-		ToolGroup{Iteration: 1},
+		ToolGroup{},
 		TextDone{blockCtx: blockAt(ctx), FullText: "two"},
 		ResponseEndBlock{blockCtx: blockAt(ctx), Status: "completed"},
 	)))
@@ -242,7 +242,7 @@ func TestMergeTextJoinsAcrossEndsOnlyWhenTheyAreFolded(t *testing.T) {
 		return blockSeq(
 			TextDone{FullText: "one "},
 			ResponseEndBlock{Status: "completed"},
-			ToolGroup{Iteration: 1},
+			ToolGroup{},
 			TextDone{FullText: "two"},
 			ResponseEndBlock{Status: "completed"},
 		)
