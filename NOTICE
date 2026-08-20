@@ -16,7 +16,8 @@ Specifically:
   spec/openapi.json is a verbatim vendored copy of that project's OpenAPI
   document. spec/README.md records the upstream commit it came from.
 
-  types.go and event.go declare Go types mirroring that document's schemas, and
+  types.go, event.go and enums.go declare Go types mirroring that document's
+  schemas, and
   their doc comments reproduce the document's own schema and property
   descriptions.
 

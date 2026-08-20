@@ -43,9 +43,12 @@ are not there yet.
 is this module's contract of record. `spec/README.md` records which upstream
 commit it came from and how to refresh it.
 
-Types in this module declare only fields that document declares. A conformance
-test enforces it in that one direction: the module never claims a field the server
-does not have.
+Types in this module declare only fields that document declares. The conformance
+tests enforce that, and each field's Go type and optionality, and the event
+decoder's coverage of the document's discriminators.
+
+They check one direction only: a field the document declares and this module omits
+passes. The surface is meant to be smaller than the document, not equal to it.
 
 ## Checks
 
@@ -54,8 +57,9 @@ bin/check.sh
 ```
 
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
-All five pass. CI runs the same script on three Go versions: the floor `go.mod`
-declares, the previous release, and current stable.
+All five pass. CI runs the same script on the floor `go.mod` declares and on
+current stable. `golangci-lint` runs as its own job, because it needs an install
+this script deliberately does not.
 
 ## Releasing
 

@@ -11,10 +11,9 @@ name: CI
 # being required is advisory no matter what it asserts. The matrix renders one
 # name per leg, so the full set is:
 #
-#   Go SDK tests (1.23.x), Go SDK tests (1.24.x), Go SDK tests (stable),
-#   Go SDK lint
+#   Go SDK tests (1.25.x), Go SDK tests (stable), Go SDK lint
 #
-# Require those four and nothing else. Two names from the release workflows show
+# Require those three and nothing else. Two names from the release workflows show
 # up in the same picker and must never be added:
 #
 #   Release / Check   fires only on a pull request that changes version.json
@@ -49,18 +48,21 @@ concurrency:
 
 jobs:
   test:
-    # The module's declared floor, the previous release, and current stable. The
-    # floor leg is the load-bearing one: go.mod claims 1.23 so a consumer may be
-    # there, and a claim nothing builds is a claim nothing keeps. go vet's
-    # stdversion analyzer catches a too-new stdlib symbol, but only this leg
-    # catches behaviour.
+    # The module's declared floor and current stable. The floor leg is the
+    # load-bearing one: go.mod claims 1.25 so a consumer may be there, and a claim
+    # nothing builds is a claim nothing keeps. go vet's stdversion analyzer catches
+    # a too-new stdlib symbol, but only this leg catches behaviour.
+    #
+    # The two collapse to one toolchain until 1.26 ships. Keeping both named means
+    # the floor stays covered on the day they diverge, rather than needing a leg
+    # added at the moment it starts to matter.
     name: Go SDK tests (${{ matrix.go }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.23.x', '1.24.x', 'stable']
+        go: ['1.25.x', 'stable']
     steps:
       - name: Check out repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0

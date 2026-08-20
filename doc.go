@@ -9,8 +9,9 @@
 // There is no session, files, turn-loop, transcript-block or tool-dispatch
 // surface. A caller needing those reaches the routes directly.
 //
-// The public API returns iter.Seq2, so building against this package needs Go
-// 1.23 or newer. go.mod declares that floor and CI builds it.
+// Building against this package needs Go 1.25 or newer. go.mod declares that
+// floor and CI builds it. The floor tracks the consumer rather than the language
+// features used here, which reach back to 1.23 for iter.Seq2.
 //
 //	client, err := omnigent.New("http://127.0.0.1:6767", omnigent.WithBearerToken(token))
 //	if err != nil {
@@ -86,8 +87,9 @@
 // Every call takes a context.Context, and cancelling it is the only way to stop
 // a stream. Note what that does and does not do: dropping the stream ends the
 // *subscription*, not the agent's turn. The turn runs on the server side
-// independently of any subscriber. To actually stop work, post an interrupt with
-// [Client.Interrupt].
+// independently of any subscriber. To actually stop work, a caller posts an
+// interrupt to the session's events route — which this release does not reach, so
+// that post is theirs to make.
 //
 // # Errors
 //

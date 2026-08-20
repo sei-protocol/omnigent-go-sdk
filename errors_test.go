@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -127,7 +126,7 @@ func TestAPIErrorClassification(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			var out map[string]any
-			err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+			err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 			if err == nil {
 				t.Fatal("doJSON = nil error, want a failure")
 			}
@@ -315,7 +314,7 @@ func TestAPIErrorDoesNotCopyCredentialsIntoLogLines(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var out map[string]any
-	err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+	err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -367,7 +366,7 @@ func TestAPIErrorRetainsTheRequestID(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var out map[string]any
-	err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+	err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {

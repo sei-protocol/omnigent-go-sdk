@@ -177,7 +177,7 @@ func TestRedirectsNeverCarryCredentialsOffTheBaseURL(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 
-			err = tc.call(context.Background(), client)
+			err = tc.call(t.Context(), client)
 			if !errors.Is(err, ErrUnsafeRedirect) {
 				t.Fatalf("error = %v, want it to wrap ErrUnsafeRedirect", err)
 			}
@@ -223,7 +223,7 @@ func TestRedirectsNeverStepDownToPlainHTTP(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var out map[string]any
-	err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+	err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 	if !errors.Is(err, ErrUnsafeRedirect) {
 		t.Fatalf("error = %v, want it to wrap ErrUnsafeRedirect", err)
 	}
@@ -260,7 +260,7 @@ func TestRedirectsOnTheSameEndpointStillWork(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var session map[string]any
-	err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &session)
+	err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &session)
 	if err != nil {
 		t.Fatalf("doJSON: %v, want the same-host same-scheme redirect to be followed", err)
 	}
@@ -300,7 +300,7 @@ func TestSendInputCannotReportADroppedWriteAsSuccess(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var accepted map[string]any
-	err = client.doJSON(context.Background(), http.MethodPost,
+	err = client.doJSON(t.Context(), http.MethodPost,
 		[]string{"v1", "sessions", "conv_1", "events"}, nil,
 		map[string]any{"type": "message", "text": "hello"}, &accepted)
 	if err == nil {
@@ -338,7 +338,7 @@ func TestRedirectChainIsCapped(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var out map[string]any
-	err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+	err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 	if !errors.Is(err, ErrUnsafeRedirect) {
 		t.Fatalf("error = %v, want it to wrap ErrUnsafeRedirect", err)
 	}
@@ -402,7 +402,7 @@ func TestRedirectsNeverCarryAttackerChosenBasicAuth(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var out map[string]any
-	if err = client.doJSON(context.Background(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out); err == nil {
+	if err = client.doJSON(t.Context(), http.MethodGet, []string{"v1", "sessions", "conv_1"}, nil, nil, &out); err == nil {
 		t.Fatal("doJSON succeeded, want ErrUnsafeRedirect for a Location carrying userinfo")
 	} else if !errors.Is(err, ErrUnsafeRedirect) {
 		t.Errorf("error = %v, want ErrUnsafeRedirect", err)
@@ -475,7 +475,7 @@ func TestRedirectRefusesASchemeThePackageDoesNotSpeak(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			var out map[string]any
-			err = client.doJSON(context.Background(), http.MethodGet,
+			err = client.doJSON(t.Context(), http.MethodGet,
 				[]string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 			if err == nil {
 				t.Fatalf("doJSON = nil error, want a refusal for a %s:// Location", scheme)
@@ -536,7 +536,7 @@ func TestRefusedRedirectErrorCarriesNoCredential(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			var out map[string]any
-			err = client.doJSON(context.Background(), http.MethodGet,
+			err = client.doJSON(t.Context(), http.MethodGet,
 				[]string{"v1", "sessions", "conv_1"}, nil, nil, &out)
 			if err == nil {
 				t.Fatal("doJSON = nil error, want a refusal")
