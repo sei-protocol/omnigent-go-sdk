@@ -122,8 +122,11 @@ func TestChildrenTreeEndsOnACycle(t *testing.T) {
 	if len(repeats) != 1 {
 		t.Fatalf("the cycle back to root appears %d times, want 1", len(repeats))
 	}
-	if !repeats[0].Truncated {
-		t.Error("the cycle edge is not marked Truncated, so a caller cannot tell it from a leaf")
+	if !repeats[0].Repeated {
+		t.Error("the cycle edge is not marked Repeated, so a caller cannot tell it from a leaf")
+	}
+	if repeats[0].Truncated {
+		t.Error("the cycle edge reports Truncated; that reason is the depth cap, not a cycle")
 	}
 	if len(repeats[0].Children) != 0 {
 		t.Error("the walk followed the cycle edge")
