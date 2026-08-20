@@ -38,6 +38,11 @@ This module runs no code generator. Do not add one: re-adding one is a one-way
 door. The previous one decided the shape of the public surface, which is what this
 rebuild removes.
 
+`docs/adr/0001-generate-wire-types-behind-a-facade.md` proposes changing that, by
+generating into `internal/` where a generated name cannot reach a consumer. It is
+at status Proposed, so the rule above still holds. `spec/preprocess.py` is that
+proposal's evidence and nothing runs it.
+
 ## Checks
 
 ```sh
