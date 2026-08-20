@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestUploadDoesNotHoldTheFileInMemory pins the reason Upload takes a reader.
@@ -92,33 +94,6 @@ func TestUploadSurfacesAReadFailureRatherThanHanging(t *testing.T) {
 	}
 }
 
-func TestDownloadRefusesToWritePastTheCallersBound(t *testing.T) {
-	t.Parallel()
-
-	const bound = 1 << 10
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(w, io.LimitReader(zeroes{}, bound*4))
-	}))
-	defer server.Close()
-
-	client, err := New(server.URL)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	var sink bytes.Buffer
-	written, err := client.Files().ForSession("conv_1").Download(
-		context.Background(), "file_1", &sink, bound)
-	if err == nil {
-		t.Fatal("Download = nil error for a body past the bound")
-	}
-	if written > bound {
-		t.Errorf("wrote %d bytes past a %d-byte bound", written, bound)
-	}
-	if !strings.Contains(err.Error(), "exceeds") {
-		t.Errorf("error = %v, want it to name the bound", err)
-	}
-}
-
 func TestDownloadRequiresABound(t *testing.T) {
 	t.Parallel()
 
@@ -172,4 +147,124 @@ func heapInUse() int64 {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
 	return int64(stats.HeapInuse)
+}
+
+// TestSessionFileKeepsTheBodyItDecodedFrom pins the escape hatch on the one
+// surface with no schema.
+//
+// Every session file route publishes an empty response schema, so the named
+// fields are observation rather than contract. A caller reaching for a field this
+// package does not name has no other route to it.
+func TestSessionFileKeepsTheBodyItDecodedFrom(t *testing.T) {
+	t.Parallel()
+
+	// A field this package does not name, which is the whole point.
+	const body = `{"id":"file_1","filename":"a.txt","bytes":12,"purpose":"assistants","x_server_added":{"nested":true}}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	file, err := client.Files().ForSession("conv_1").Get(context.Background(), "file_1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if file.ID != "file_1" || file.Filename != "a.txt" {
+		t.Errorf("named fields lost: %+v", file)
+	}
+	if file.Raw == nil {
+		t.Fatal("Raw is nil, so the documented escape hatch reaches nothing")
+	}
+	if got := file.Raw["purpose"]; got != "assistants" {
+		t.Errorf(`Raw["purpose"] = %v, want "assistants"`, got)
+	}
+	nested, ok := file.Raw["x_server_added"].(map[string]any)
+	if !ok || nested["nested"] != true {
+		t.Errorf(`Raw["x_server_added"] = %v, want the nested object`, file.Raw["x_server_added"])
+	}
+	// The named fields must also survive in Raw, so a caller reads one source.
+	if got := file.Raw["id"]; got != "file_1" {
+		t.Errorf(`Raw["id"] = %v, want file_1`, got)
+	}
+}
+
+// TestRejectedUploadLeavesNoGoroutine pins the pipe's other half.
+//
+// Upload starts the writer goroutine before doUpload validates anything, so a
+// rejection that never builds a request leaves nothing to close the pipe and the
+// goroutine blocks on its first write forever. Measured before the fix: three
+// rejected uploads, three permanently blocked goroutines.
+func TestRejectedUploadLeavesNoGoroutine(t *testing.T) {
+	base := runtime.NumGoroutine()
+
+	client, err := New("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// A dot segment is rejected inside the request path, after the goroutine
+	// starts and before any request exists.
+	for range 5 {
+		if _, err := client.Files().ForSession(".").Upload(
+			context.Background(), "a.txt", strings.NewReader("payload")); err == nil {
+			t.Fatal("Upload = nil error for a path segment that cannot be resolved")
+		}
+	}
+
+	for range 20 {
+		if runtime.NumGoroutine() <= base {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("goroutines %d -> %d after 5 rejected uploads", base, runtime.NumGoroutine())
+}
+
+// TestDownloadWritesAtMostTheBound pins what the caller's writer receives, which
+// is the assertion the first version of this test missed.
+//
+// Reading one byte past the bound is how a file that fits is told from one that
+// was truncated. That byte must not reach a writer that declared a capacity, and
+// the returned count must match what the writer got.
+func TestDownloadWritesAtMostTheBound(t *testing.T) {
+	t.Parallel()
+
+	const bound = 10
+	for _, size := range []int{bound - 1, bound, bound + 1, 4096} {
+		t.Run(fmt.Sprintf("body_%d", size), func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(bytes.Repeat([]byte("A"), size))
+			}))
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			var sink bytes.Buffer
+			n, err := client.Files().ForSession("c").Download(
+				context.Background(), "f", &sink, bound)
+
+			if sink.Len() > bound {
+				t.Errorf("wrote %d bytes to a writer that declared %d", sink.Len(), bound)
+			}
+			if int(n) != sink.Len() {
+				t.Errorf("returned %d but the writer received %d", n, sink.Len())
+			}
+			if size > bound {
+				if !errors.Is(err, ErrTruncated) {
+					t.Errorf("error = %v, want ErrTruncated for a body past the bound", err)
+				}
+			} else if err != nil {
+				t.Errorf("error = %v for a body that fits", err)
+			}
+		})
+	}
 }

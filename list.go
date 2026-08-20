@@ -2,6 +2,7 @@ package omnigent
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"net/url"
 	"strconv"
@@ -301,20 +302,42 @@ func setPageQuery(query url.Values, limit int, after, before string, order SortO
 // that means paging until the name matches — worth caching, since an id is
 // stable and a listing is not free.
 
+// maxListingPages bounds one listing walk.
+//
+// A cursor walk's termination is the server's to grant, and a server that keeps
+// answering "more" — through a bug, a proxy rewriting cursors, or malice — turns a
+// listing into an unbounded loop in the caller's process. The number is generous
+// against any real listing and finite against that.
+const maxListingPages = 10_000
+
 // pageSeq walks a cursor-paged listing as one sequence.
 //
 // A caller almost always wants every item, and the loop that gets there is the
-// same four lines every time: read a page, yield its items, stop on the last one,
-// carry the cursor forward. Getting it wrong is quiet — a caller that trusts
-// HasMore alone re-reads page one forever against a proxy that keeps saying yes,
-// which is why this stops on an empty cursor too.
+// same four lines every time: read a page, yield its items, stop, carry the cursor
+// forward. Getting it wrong is quiet, so this owns it.
+//
+// Three stops, because the server decides two of them and cannot be trusted with
+// the third. It stops when the server says there is no more; when the cursor comes
+// back empty, which a listing that reports more while returning nothing would
+// otherwise loop on; and when a cursor repeats or the page count reaches
+// [maxListingPages], which is what makes the walk end whatever the server does.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
-// issues no further request.
+// issues no further request. cursor is declared inside the closure, so a second
+// range restarts from the first page rather than resuming a half-consumed walk.
 func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*Page[T], error)) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var cursor string
-		for {
+		seen := make(map[string]bool)
+
+		for pages := 0; ; pages++ {
+			if pages >= maxListingPages {
+				var zero T
+				yield(zero, fmt.Errorf("%w: stopped after %d pages",
+					ErrListingUnbounded, maxListingPages))
+				return
+			}
+
 			page, err := fetch(ctx, cursor)
 			if err != nil {
 				var zero T
@@ -326,12 +349,18 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			// Both conditions, not just HasMore: an empty page carries an empty
-			// LastID, and a listing that reports more while returning nothing
-			// would otherwise loop without end.
 			if !page.HasMore || page.LastID == "" {
 				return
 			}
+			if seen[page.LastID] {
+				// The server advanced nothing. Following it again reads the same
+				// page forever, so stop and say which cursor repeated.
+				var zero T
+				yield(zero, fmt.Errorf("%w: cursor %q repeated after %d pages",
+					ErrListingUnbounded, page.LastID, pages+1))
+				return
+			}
+			seen[page.LastID] = true
 			cursor = page.LastID
 		}
 	}

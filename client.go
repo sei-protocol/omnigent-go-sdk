@@ -774,13 +774,22 @@ func (c *Client) doDownload(ctx context.Context, segments []string, w io.Writer,
 		return 0, newAPIError(resp)
 	}
 
-	written, err := io.Copy(w, io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
+	// CopyN to the caller's writer, then probe the body separately. Reading one
+	// past the bound is how a file that fits is told from one that was truncated,
+	// but that byte must not reach a writer that declared a smaller capacity.
+	written, err := io.CopyN(w, resp.Body, maxBytes)
+	switch {
+	case errors.Is(err, io.EOF):
+		// Body ended within the bound, which is the ordinary case.
+		return written, nil
+	case err != nil:
 		return written, fmt.Errorf("GET %s: read body: %w", target.Path, err)
 	}
-	if written > maxBytes {
-		return maxBytes, fmt.Errorf("GET %s: %w: body exceeds the caller's %d-byte bound",
-			target.Path, ErrInvalidArgument, maxBytes)
+
+	var probe [1]byte
+	if n, _ := resp.Body.Read(probe[:]); n > 0 {
+		return written, fmt.Errorf("GET %s: %w: body exceeds the caller's %d-byte bound",
+			target.Path, ErrTruncated, maxBytes)
 	}
 	return written, nil
 }

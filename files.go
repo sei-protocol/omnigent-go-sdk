@@ -2,6 +2,7 @@ package omnigent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"iter"
@@ -66,7 +67,32 @@ type SessionFile struct {
 	// Raw is the response body this file decoded from, so a caller can reach a
 	// field this package does not name. The routes publish no schema, so the set
 	// above is what has been observed rather than what is guaranteed.
+	//
+	// [SessionFile.UnmarshalJSON] fills it. Empty only when the body was empty.
 	Raw map[string]any `json:"-"`
+}
+
+// UnmarshalJSON decodes a file, keeping the body it decoded from.
+//
+// The named fields above are what this package has observed, not what the server
+// guarantees: every file route publishes an empty response schema, so nothing
+// pins them and nothing warns when the server adds a field. Keeping the body is
+// what lets a caller reach one without waiting for this package to name it.
+//
+// The alias sheds this method, so the first decode does not recurse.
+func (f *SessionFile) UnmarshalJSON(data []byte) error {
+	type named SessionFile
+	var decoded named
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*f = SessionFile(decoded)
+	// Second pass rather than a json.RawMessage field, because a caller wants the
+	// decoded map and not bytes they have to unmarshal again.
+	if err := json.Unmarshal(data, &f.Raw); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ListFilesOptions tunes a file listing. The zero value asks for the server's
@@ -153,11 +179,16 @@ func (s *SessionFiles) Upload(ctx context.Context, filename string, content io.R
 
 	body, writer := io.Pipe()
 	form := multipart.NewWriter(writer)
+	// Close the read half on every return. doUpload can fail before it ever builds
+	// a request — a rejected path segment, say — and then nothing else closes the
+	// pipe, so the writer goroutine below blocks on its first write forever.
+	defer func() { _ = body.Close() }()
 
 	go func() {
-		// The pipe writer is the only thing this goroutine owns, and it closes it
-		// on every path, so the request side always sees an end — an error as an
-		// error, a short read as a short read, never a hang.
+		// Close the pipe writer on every path, so the request side always sees an
+		// end — an error as an error, a short read as a short read. The reader half
+		// is closed by the deferred Close above, which is what stops this goroutine
+		// blocking when the request is never built.
 		part, err := form.CreateFormFile("file", filename)
 		if err == nil {
 			_, err = io.Copy(part, content)
@@ -180,6 +211,9 @@ func (s *SessionFiles) Upload(ctx context.Context, filename string, content io.R
 // The bound is required rather than optional. The server decides the length, and
 // an unbounded copy from a remote server into a caller's memory or disk is a
 // fault waiting for a large file. Pass a bound the caller can afford.
+//
+// w receives at most maxBytes. A larger body returns [ErrTruncated] with the
+// count actually written, so a caller can tell a prefix from the whole file.
 func (s *SessionFiles) Download(ctx context.Context, fileID string, w io.Writer, maxBytes int64) (int64, error) {
 	if s.sessionID == "" || fileID == "" {
 		return 0, fmt.Errorf("download session file: %w: sessionID and fileID are required", ErrInvalidArgument)

@@ -86,6 +86,23 @@ var (
 	// a hostile one. Recover exactly as for [ErrStreamInterrupted].
 	ErrStreamFrameTooLarge = fmt.Errorf("%w: frame exceeds the client's size limit", ErrStreamProtocol)
 
+	// ErrListingUnbounded reports a paged listing that never reached an end: it
+	// returned a cursor it had already returned, or kept reporting more past the
+	// page ceiling.
+	//
+	// The server decides when a listing ends, so a walk cannot rely on it. This is
+	// what the walk raises instead of continuing, and retrying will not help until
+	// the server's paging is fixed.
+	ErrListingUnbounded = errors.New("listing did not reach an end")
+
+	// ErrTruncated reports that a response was larger than the bound the caller
+	// supplied, so what was written is a prefix rather than the whole thing.
+	//
+	// Not [ErrInvalidArgument]: the caller's arguments were accepted and the
+	// request was made. The server chose the length. Retry with a larger bound, or
+	// treat the prefix as all that was wanted.
+	ErrTruncated = errors.New("response exceeds the caller's bound")
+
 	// ErrUnsafeRedirect reports a redirect this package would not follow: one
 	// leaving the host the base URL named, one stepping down from https to
 	// plain http, one rewriting a write as a read, or a chain that never

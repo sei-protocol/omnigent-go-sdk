@@ -107,6 +107,16 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 	tokens := make(chan struct{}, opts.Concurrency)
 
 	var firstErr error
+	// recordErr keeps the first failure and drops the rest: a walk that fails in
+	// four places has one cause worth reporting and three symptoms.
+	recordErr := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	var walk func(node *TreeNode)
 	var wg sync.WaitGroup
 
@@ -115,20 +125,21 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 
 		if node.Depth >= opts.MaxDepth {
 			// Ask whether children exist without descending, so Truncated is an
-			// answer rather than a guess.
-			for child, err := range s.Children(ctx, node.ID) {
+			// answer rather than a guess. Under the same token as a descending
+			// listing: this is the widest level of the walk, so leaving it
+			// unbounded would put more requests in flight than every other level
+			// combined, whatever Concurrency says.
+			tokens <- struct{}{}
+			for _, err := range s.Children(ctx, node.ID) {
+				<-tokens
 				if err != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
+					recordErr(err)
 					return
 				}
-				_ = child
 				node.Truncated = true
 				return
 			}
+			<-tokens
 			return
 		}
 
@@ -145,11 +156,7 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 		<-tokens
 
 		if listErr != nil {
-			mu.Lock()
-			if firstErr == nil {
-				firstErr = listErr
-			}
-			mu.Unlock()
+			recordErr(listErr)
 			return
 		}
 
@@ -182,25 +189,46 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 	return root, firstErr
 }
 
-// SubtreeBusy reports whether any session in the subtree has work outstanding.
+// SubtreeBusy reports whether any session *below* the named one has work
+// outstanding, and whether the walk saw the whole subtree.
 //
-// It walks the same bounded tree, so the same caveats apply: a subtree deeper than
-// the cap answers about the part it reached. A truncated walk that found no work
-// is not proof there is none, so this reports the truncation as an error rather
-// than a false negative.
-func (s *Sessions) SubtreeBusy(ctx context.Context, sessionID string, opts TreeOptions) (bool, error) {
+// It does not read the named session's own state: no listing describes it, so
+// there is no summary to read. Use [Sessions.Get] for that.
+//
+// complete is false when the walk stopped at its depth cap, which makes a false
+// busy inconclusive rather than wrong — there may be work below the cap. A true
+// busy is sound either way, so complete is true whenever busy is.
+//
+// Truncation is deliberately not an error. It is a property of the answer, and the
+// caller decides what to do about it: raise [TreeOptions.MaxDepth] and ask again,
+// or accept the bound. Reporting it as an error would either force a caller to
+// string-match, or make this package invent a sentinel for a case that is not a
+// failure. An error here means the walk itself failed.
+//
+//	busy, complete, err := sessions.SubtreeBusy(ctx, id, omnigent.TreeOptions{})
+//	switch {
+//	case err != nil:
+//		return err
+//	case busy:
+//		// work outstanding, whatever the walk missed
+//	case !complete:
+//		// nothing found, but the walk did not reach the whole subtree
+//	}
+func (s *Sessions) SubtreeBusy(ctx context.Context, sessionID string, opts TreeOptions) (busy, complete bool, err error) {
 	root, err := s.ChildrenTree(ctx, sessionID, opts)
 	if root == nil {
-		return false, err
+		return false, false, err
 	}
 
-	busy := false
 	truncated := false
 	var visit func(*TreeNode)
 	visit = func(node *TreeNode) {
 		if node.Truncated {
 			truncated = true
 		}
+		// Depth 0 is the named session, which no listing describes, so there is no
+		// summary to read. A caller asking about that session's own turn wants
+		// Sessions.Get; this answers about the subtree below it, and says so.
 		if node.Depth > 0 && ChildSessionBusy(node.Session) {
 			busy = true
 		}
@@ -210,16 +238,9 @@ func (s *Sessions) SubtreeBusy(ctx context.Context, sessionID string, opts TreeO
 	}
 	visit(root)
 
+	// A positive answer needs no completeness caveat: work found is work found.
 	if busy {
-		// A positive answer is sound whatever the walk missed.
-		return true, err
+		return true, true, err
 	}
-	if err != nil {
-		return false, err
-	}
-	if truncated {
-		return false, fmt.Errorf("subtree busy for %s: %w: the walk stopped at depth %d, so a quiet result is not proof",
-			sessionID, ErrInvalidArgument, opts.withDefaults().MaxDepth)
-	}
-	return false, nil
+	return false, !truncated, err
 }

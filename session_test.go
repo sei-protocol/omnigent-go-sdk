@@ -176,7 +176,7 @@ func TestChildrenTreeStopsAtTheDepthCapAndSaysSo(t *testing.T) {
 	}
 }
 
-func TestSubtreeBusyRefusesAFalseNegativeOnATruncatedWalk(t *testing.T) {
+func TestSubtreeBusyReportsAnIncompleteWalkRatherThanAFalseNegative(t *testing.T) {
 	t.Parallel()
 
 	// The busy child sits below the cap, so a quiet answer would be wrong.
@@ -185,12 +185,17 @@ func TestSubtreeBusyRefusesAFalseNegativeOnATruncatedWalk(t *testing.T) {
 		"a":    {{ids: []string{"b"}}},
 	})
 
-	busy, err := client.Sessions().SubtreeBusy(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	busy, complete, err := client.Sessions().SubtreeBusy(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	if err != nil {
+		t.Fatalf("SubtreeBusy: %v", err)
+	}
 	if busy {
 		t.Fatal("SubtreeBusy = true; the fixture has no busy child")
 	}
-	if err == nil {
-		t.Error("SubtreeBusy reported a quiet subtree with no error, but the walk was truncated")
+	// The busy child sits below the cap, so a quiet answer is inconclusive and the
+	// caller has to be told that rather than left to assume the subtree is idle.
+	if complete {
+		t.Error("reported a complete walk, but it stopped at MaxDepth 1 with children below")
 	}
 }
 
@@ -351,4 +356,114 @@ func testTimeout(t *testing.T) <-chan struct{} {
 		}
 	}()
 	return timer
+}
+
+// TestSubtreeBusyReportsACompleteWalk pins the other half: when the walk reached
+// the whole subtree, a quiet answer is conclusive and the caller should not be
+// nudged into raising the depth.
+func TestSubtreeBusyReportsACompleteWalk(t *testing.T) {
+	t.Parallel()
+
+	// One level, and the child has no children of its own.
+	client, _ := treeServer(t, map[string][]childPage{
+		"root": {{ids: []string{"a"}}},
+		"a":    {{ids: nil}},
+	})
+
+	busy, complete, err := client.Sessions().SubtreeBusy(context.Background(), "root", TreeOptions{MaxDepth: 3})
+	if err != nil {
+		t.Fatalf("SubtreeBusy: %v", err)
+	}
+	if busy {
+		t.Error("busy = true; the fixture has no busy child")
+	}
+	if !complete {
+		t.Error("complete = false for a walk that reached every node")
+	}
+}
+
+// TestListingThatNeverAdvancesEnds pins the bound that makes a cursor walk the
+// caller's to end rather than the server's to grant.
+//
+// A server that returns a cursor it already returned — through a bug, or a proxy
+// rewriting cursors — otherwise pages forever in the caller's process, buffering
+// every row. Measured before this bound existed: 26,094 requests in two seconds.
+func TestListingThatNeverAdvancesEnds(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		page := Page[SessionListItem]{
+			Data:    []SessionListItem{{ID: fmt.Sprintf("conv_%d", n)}},
+			LastID:  fmt.Sprintf("cur_%d", n%2), // alternates, never advances
+			HasMore: true,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var got error
+	for _, err := range client.Sessions().List(context.Background(), ListSessionsOptions{}) {
+		if err != nil {
+			got = err
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("the walk reported no error against a listing that never advanced")
+	}
+	if !errors.Is(got, ErrListingUnbounded) {
+		t.Errorf("error = %v, want it to wrap ErrListingUnbounded", got)
+	}
+	if requests.Load() > 10 {
+		t.Errorf("issued %d requests before stopping", requests.Load())
+	}
+}
+
+// TestChildrenTreeBoundsEveryLevel pins the concurrency bound at the level that
+// has the most requests.
+//
+// The depth-cap probe is one listing per child at the widest level of the walk.
+// Before it took a token, a bound of 4 admitted 28 in flight.
+func TestChildrenTreeBoundsEveryLevel(t *testing.T) {
+	t.Parallel()
+
+	var inFlight, peak atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if n <= old || peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+		inFlight.Add(-1)
+
+		page := Page[ChildSessionSummary]{}
+		for i := range 6 {
+			page.Data = append(page.Data, ChildSessionSummary{ID: fmt.Sprintf("%s-%d", r.URL.Path, i)})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Sessions().ChildrenTree(context.Background(), "root",
+		TreeOptions{MaxDepth: 3, Concurrency: 4}); err != nil {
+		t.Fatalf("ChildrenTree: %v", err)
+	}
+	if got := peak.Load(); got > 4 {
+		t.Errorf("peak %d concurrent listings against a bound of 4", got)
+	}
 }
