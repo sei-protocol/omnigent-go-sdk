@@ -7,16 +7,24 @@ import (
 
 // Event is one decoded frame from a session's event stream.
 //
-// The interface is sealed: its only implementations are the event structs in this
-// file, one per member of the server's discriminated union, plus [UnknownEvent].
-// Consume it with a type switch:
+// The implementations in this file are one per member of the server's
+// discriminated union, plus [UnknownEvent]. Consume one with a type switch:
 //
 //	switch ev := event.(type) {
 //	case OutputTextDeltaEvent:
 //		fmt.Print(ev.Delta)
 //	case ResponseCompletedEvent:
 //		return nil
+//	default:
+//		log.Printf("ignoring %s", ev.EventType())
 //	}
+//
+// Give that switch a default arm. The set grows when the server's does, and an
+// [UnknownEvent] arrives for a discriminator this build predates, so a switch
+// without one silently drops frames it was never written to expect.
+//
+// [Event.EventType] reaches the discriminator without a switch at all, which is
+// what logging, metrics and routing want.
 //
 // A minimal correct consumer needs relatively few of the variants. An in-process
 // agent's turn opens at [InProgressEvent] and closes at exactly one of
@@ -98,7 +106,16 @@ import (
 // against their turn.* counterparts. The unprefixed name is nobody's: reaching
 // for the wrong one of a pair now takes a deliberate act rather than a guess.
 type Event interface {
-	isEvent()
+	// EventType returns the frame's wire discriminator, e.g. "session.status".
+	//
+	// It is what makes this interface worth having: logging, metrics and routing
+	// all want the type and nothing else, and without it every one of them needs a
+	// switch over all 53 variants to reach a field they all share.
+	//
+	// The value is the one the frame carried, not a constant per Go type, so a
+	// frame decoded by this package reports what the server actually sent. On an
+	// [UnknownEvent] it is the discriminator this build did not recognise.
+	EventType() string
 }
 
 // UnknownEvent carries a frame whose discriminator this build does not know.
@@ -115,7 +132,7 @@ type UnknownEvent struct {
 	Raw []byte
 }
 
-func (UnknownEvent) isEvent() {}
+func (e UnknownEvent) EventType() string { return e.Type }
 
 // DecodeEvent decodes one frame into its typed variant.
 //
@@ -240,7 +257,7 @@ type BrowserActionRequestEvent struct {
 	Type string `json:"type"`
 }
 
-func (BrowserActionRequestEvent) isEvent() {}
+func (e BrowserActionRequestEvent) EventType() string { return e.Type }
 
 // ClientTaskCancelEvent is the wire event "response.client_task.cancel".
 //
@@ -258,7 +275,7 @@ type ClientTaskCancelEvent struct {
 	Type string `json:"type"`
 }
 
-func (ClientTaskCancelEvent) isEvent() {}
+func (e ClientTaskCancelEvent) EventType() string { return e.Type }
 
 // CompactionCompletedEvent is the wire event "response.compaction.completed".
 //
@@ -283,7 +300,7 @@ type CompactionCompletedEvent struct {
 	Type string `json:"type"`
 }
 
-func (CompactionCompletedEvent) isEvent() {}
+func (e CompactionCompletedEvent) EventType() string { return e.Type }
 
 // CompactionFailedEvent is the wire event "response.compaction.failed".
 //
@@ -295,7 +312,7 @@ type CompactionFailedEvent struct {
 	Type string `json:"type"`
 }
 
-func (CompactionFailedEvent) isEvent() {}
+func (e CompactionFailedEvent) EventType() string { return e.Type }
 
 // CompactionInProgressEvent is the wire event "response.compaction.in_progress".
 //
@@ -307,7 +324,7 @@ type CompactionInProgressEvent struct {
 	Type string `json:"type"`
 }
 
-func (CompactionInProgressEvent) isEvent() {}
+func (e CompactionInProgressEvent) EventType() string { return e.Type }
 
 // ElicitationRequestEvent is the wire event "response.elicitation_request".
 //
@@ -330,7 +347,7 @@ type ElicitationRequestEvent struct {
 	Type string `json:"type"`
 }
 
-func (ElicitationRequestEvent) isEvent() {}
+func (e ElicitationRequestEvent) EventType() string { return e.Type }
 
 // ElicitationResolvedEvent is the wire event "response.elicitation_resolved".
 //
@@ -347,7 +364,7 @@ type ElicitationResolvedEvent struct {
 	Type string `json:"type"`
 }
 
-func (ElicitationResolvedEvent) isEvent() {}
+func (e ElicitationResolvedEvent) EventType() string { return e.Type }
 
 // ErrorEvent is the wire event "response.error".
 //
@@ -368,7 +385,7 @@ type ErrorEvent struct {
 	Type string `json:"type"`
 }
 
-func (ErrorEvent) isEvent() {}
+func (e ErrorEvent) EventType() string { return e.Type }
 
 // InProgressEvent is the wire event "response.in_progress".
 //
@@ -382,7 +399,7 @@ type InProgressEvent struct {
 	Type string `json:"type"`
 }
 
-func (InProgressEvent) isEvent() {}
+func (e InProgressEvent) EventType() string { return e.Type }
 
 // IncompleteEvent is the wire event "response.incomplete".
 //
@@ -398,7 +415,7 @@ type IncompleteEvent struct {
 	Type string `json:"type"`
 }
 
-func (IncompleteEvent) isEvent() {}
+func (e IncompleteEvent) EventType() string { return e.Type }
 
 // OutputFileDoneEvent is the wire event "response.output_file.done".
 //
@@ -419,7 +436,7 @@ type OutputFileDoneEvent struct {
 	Type string `json:"type"`
 }
 
-func (OutputFileDoneEvent) isEvent() {}
+func (e OutputFileDoneEvent) EventType() string { return e.Type }
 
 // OutputItemDoneEvent is the wire event "response.output_item.done".
 //
@@ -435,7 +452,7 @@ type OutputItemDoneEvent struct {
 	Type string `json:"type"`
 }
 
-func (OutputItemDoneEvent) isEvent() {}
+func (e OutputItemDoneEvent) EventType() string { return e.Type }
 
 // OutputTextDeltaEvent is the wire event "response.output_text.delta".
 //
@@ -461,7 +478,7 @@ type OutputTextDeltaEvent struct {
 	Type string `json:"type"`
 }
 
-func (OutputTextDeltaEvent) isEvent() {}
+func (e OutputTextDeltaEvent) EventType() string { return e.Type }
 
 // PolicyDeniedEvent is the wire event "response.policy_denied".
 //
@@ -481,7 +498,7 @@ type PolicyDeniedEvent struct {
 	Type string `json:"type"`
 }
 
-func (PolicyDeniedEvent) isEvent() {}
+func (e PolicyDeniedEvent) EventType() string { return e.Type }
 
 // QueuedEvent is the wire event "response.queued".
 //
@@ -496,7 +513,7 @@ type QueuedEvent struct {
 	Type string `json:"type"`
 }
 
-func (QueuedEvent) isEvent() {}
+func (e QueuedEvent) EventType() string { return e.Type }
 
 // ReasoningStartedEvent is the wire event "response.reasoning.started".
 //
@@ -508,7 +525,7 @@ type ReasoningStartedEvent struct {
 	Type string `json:"type"`
 }
 
-func (ReasoningStartedEvent) isEvent() {}
+func (e ReasoningStartedEvent) EventType() string { return e.Type }
 
 // ReasoningSummaryTextDeltaEvent is the wire event "response.reasoning_summary_text.delta".
 //
@@ -522,7 +539,7 @@ type ReasoningSummaryTextDeltaEvent struct {
 	Type string `json:"type"`
 }
 
-func (ReasoningSummaryTextDeltaEvent) isEvent() {}
+func (e ReasoningSummaryTextDeltaEvent) EventType() string { return e.Type }
 
 // ReasoningTextDeltaEvent is the wire event "response.reasoning_text.delta".
 //
@@ -536,7 +553,7 @@ type ReasoningTextDeltaEvent struct {
 	Type string `json:"type"`
 }
 
-func (ReasoningTextDeltaEvent) isEvent() {}
+func (e ReasoningTextDeltaEvent) EventType() string { return e.Type }
 
 // ResponseCancelledEvent is the wire event "response.cancelled".
 //
@@ -550,7 +567,7 @@ type ResponseCancelledEvent struct {
 	Type string `json:"type"`
 }
 
-func (ResponseCancelledEvent) isEvent() {}
+func (e ResponseCancelledEvent) EventType() string { return e.Type }
 
 // ResponseCompletedEvent is the wire event "response.completed".
 //
@@ -564,7 +581,7 @@ type ResponseCompletedEvent struct {
 	Type string `json:"type"`
 }
 
-func (ResponseCompletedEvent) isEvent() {}
+func (e ResponseCompletedEvent) EventType() string { return e.Type }
 
 // ResponseCreatedEvent is the wire event "response.created".
 //
@@ -578,7 +595,7 @@ type ResponseCreatedEvent struct {
 	Type string `json:"type"`
 }
 
-func (ResponseCreatedEvent) isEvent() {}
+func (e ResponseCreatedEvent) EventType() string { return e.Type }
 
 // ResponseFailedEvent is the wire event "response.failed".
 //
@@ -592,7 +609,7 @@ type ResponseFailedEvent struct {
 	Type string `json:"type"`
 }
 
-func (ResponseFailedEvent) isEvent() {}
+func (e ResponseFailedEvent) EventType() string { return e.Type }
 
 // ResponseHeartbeatEvent is the wire event "response.heartbeat".
 //
@@ -612,7 +629,7 @@ type ResponseHeartbeatEvent struct {
 	Type string `json:"type"`
 }
 
-func (ResponseHeartbeatEvent) isEvent() {}
+func (e ResponseHeartbeatEvent) EventType() string { return e.Type }
 
 // RetryEvent is the wire event "response.retry".
 //
@@ -643,7 +660,7 @@ type RetryEvent struct {
 	Type string `json:"type"`
 }
 
-func (RetryEvent) isEvent() {}
+func (e RetryEvent) EventType() string { return e.Type }
 
 // SessionAgentChangedEvent is the wire event "session.agent_changed".
 //
@@ -665,7 +682,7 @@ type SessionAgentChangedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionAgentChangedEvent) isEvent() {}
+func (e SessionAgentChangedEvent) EventType() string { return e.Type }
 
 // SessionChangedFilesInvalidatedEvent is the wire event "session.changed_files.invalidated".
 //
@@ -682,7 +699,7 @@ type SessionChangedFilesInvalidatedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionChangedFilesInvalidatedEvent) isEvent() {}
+func (e SessionChangedFilesInvalidatedEvent) EventType() string { return e.Type }
 
 // SessionChildSessionUpdatedEvent is the wire event "session.child_session.updated".
 //
@@ -704,7 +721,7 @@ type SessionChildSessionUpdatedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionChildSessionUpdatedEvent) isEvent() {}
+func (e SessionChildSessionUpdatedEvent) EventType() string { return e.Type }
 
 // SessionCollaborationModeEvent is the wire event "session.collaboration_mode".
 //
@@ -724,7 +741,7 @@ type SessionCollaborationModeEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionCollaborationModeEvent) isEvent() {}
+func (e SessionCollaborationModeEvent) EventType() string { return e.Type }
 
 // SessionCreatedEvent is the wire event "session.created".
 //
@@ -753,7 +770,7 @@ type SessionCreatedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionCreatedEvent) isEvent() {}
+func (e SessionCreatedEvent) EventType() string { return e.Type }
 
 // SessionHeartbeatEvent is the wire event "session.heartbeat".
 //
@@ -769,7 +786,7 @@ type SessionHeartbeatEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionHeartbeatEvent) isEvent() {}
+func (e SessionHeartbeatEvent) EventType() string { return e.Type }
 
 // SessionInputConsumedEvent is the wire event "session.input.consumed".
 //
@@ -783,7 +800,7 @@ type SessionInputConsumedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionInputConsumedEvent) isEvent() {}
+func (e SessionInputConsumedEvent) EventType() string { return e.Type }
 
 // SessionInterruptedEvent is the wire event "session.interrupted".
 //
@@ -797,7 +814,7 @@ type SessionInterruptedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionInterruptedEvent) isEvent() {}
+func (e SessionInterruptedEvent) EventType() string { return e.Type }
 
 // SessionMCPStartupEvent is the wire event "session.mcp_startup".
 //
@@ -817,7 +834,7 @@ type SessionMCPStartupEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionMCPStartupEvent) isEvent() {}
+func (e SessionMCPStartupEvent) EventType() string { return e.Type }
 
 // SessionModelEvent is the wire event "session.model".
 //
@@ -836,7 +853,7 @@ type SessionModelEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionModelEvent) isEvent() {}
+func (e SessionModelEvent) EventType() string { return e.Type }
 
 // SessionModelOptionsEvent is the wire event "session.model_options".
 //
@@ -851,7 +868,7 @@ type SessionModelOptionsEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionModelOptionsEvent) isEvent() {}
+func (e SessionModelOptionsEvent) EventType() string { return e.Type }
 
 // SessionPresenceEvent is the wire event "session.presence".
 //
@@ -871,7 +888,7 @@ type SessionPresenceEvent struct {
 	Viewers []PresenceViewer `json:"viewers"`
 }
 
-func (SessionPresenceEvent) isEvent() {}
+func (e SessionPresenceEvent) EventType() string { return e.Type }
 
 // SessionReasoningEffortEvent is the wire event "session.reasoning_effort".
 //
@@ -891,7 +908,7 @@ type SessionReasoningEffortEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionReasoningEffortEvent) isEvent() {}
+func (e SessionReasoningEffortEvent) EventType() string { return e.Type }
 
 // SessionResourceCreatedEvent is the wire event "session.resource.created".
 //
@@ -905,7 +922,7 @@ type SessionResourceCreatedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionResourceCreatedEvent) isEvent() {}
+func (e SessionResourceCreatedEvent) EventType() string { return e.Type }
 
 // SessionResourceDeletedEvent is the wire event "session.resource.deleted".
 //
@@ -925,7 +942,7 @@ type SessionResourceDeletedEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionResourceDeletedEvent) isEvent() {}
+func (e SessionResourceDeletedEvent) EventType() string { return e.Type }
 
 // SessionSandboxStatusEvent is the wire event "session.sandbox_status".
 //
@@ -947,7 +964,7 @@ type SessionSandboxStatusEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionSandboxStatusEvent) isEvent() {}
+func (e SessionSandboxStatusEvent) EventType() string { return e.Type }
 
 // SessionSkillsEvent is the wire event "session.skills".
 //
@@ -963,7 +980,7 @@ type SessionSkillsEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionSkillsEvent) isEvent() {}
+func (e SessionSkillsEvent) EventType() string { return e.Type }
 
 // SessionStatusEvent is the wire event "session.status".
 //
@@ -1001,7 +1018,7 @@ type SessionStatusEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionStatusEvent) isEvent() {}
+func (e SessionStatusEvent) EventType() string { return e.Type }
 
 // SessionSupersededEvent is the wire event "session.superseded".
 //
@@ -1022,7 +1039,7 @@ type SessionSupersededEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionSupersededEvent) isEvent() {}
+func (e SessionSupersededEvent) EventType() string { return e.Type }
 
 // SessionTerminalActivityEvent is the wire event "session.terminal.activity".
 //
@@ -1040,7 +1057,7 @@ type SessionTerminalActivityEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionTerminalActivityEvent) isEvent() {}
+func (e SessionTerminalActivityEvent) EventType() string { return e.Type }
 
 // SessionTerminalPendingEvent is the wire event "session.terminal_pending".
 //
@@ -1060,7 +1077,7 @@ type SessionTerminalPendingEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionTerminalPendingEvent) isEvent() {}
+func (e SessionTerminalPendingEvent) EventType() string { return e.Type }
 
 // SessionTodosEvent is the wire event "session.todos".
 //
@@ -1080,7 +1097,7 @@ type SessionTodosEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionTodosEvent) isEvent() {}
+func (e SessionTodosEvent) EventType() string { return e.Type }
 
 // SessionUsageEvent is the wire event "session.usage".
 //
@@ -1112,7 +1129,7 @@ type SessionUsageEvent struct {
 	UsageByModel map[string]ModelUsage `json:"usage_by_model,omitempty"`
 }
 
-func (SessionUsageEvent) isEvent() {}
+func (e SessionUsageEvent) EventType() string { return e.Type }
 
 // ToolOutputDeltaEvent is the wire event "response.function_call_output.delta".
 //
@@ -1129,7 +1146,7 @@ type ToolOutputDeltaEvent struct {
 	Type string `json:"type"`
 }
 
-func (ToolOutputDeltaEvent) isEvent() {}
+func (e ToolOutputDeltaEvent) EventType() string { return e.Type }
 
 // TurnCancelledEvent is the wire event "turn.cancelled".
 //
@@ -1144,7 +1161,7 @@ type TurnCancelledEvent struct {
 	Type string `json:"type"`
 }
 
-func (TurnCancelledEvent) isEvent() {}
+func (e TurnCancelledEvent) EventType() string { return e.Type }
 
 // TurnCompletedEvent is the wire event "turn.completed".
 //
@@ -1159,7 +1176,7 @@ type TurnCompletedEvent struct {
 	Type string `json:"type"`
 }
 
-func (TurnCompletedEvent) isEvent() {}
+func (e TurnCompletedEvent) EventType() string { return e.Type }
 
 // TurnFailedEvent is the wire event "turn.failed".
 //
@@ -1176,7 +1193,7 @@ type TurnFailedEvent struct {
 	Type string `json:"type"`
 }
 
-func (TurnFailedEvent) isEvent() {}
+func (e TurnFailedEvent) EventType() string { return e.Type }
 
 // TurnStartedEvent is the wire event "turn.started".
 //
@@ -1191,4 +1208,4 @@ type TurnStartedEvent struct {
 	Type string `json:"type"`
 }
 
-func (TurnStartedEvent) isEvent() {}
+func (e TurnStartedEvent) EventType() string { return e.Type }
