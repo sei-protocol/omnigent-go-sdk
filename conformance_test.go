@@ -84,6 +84,38 @@ var schemaFor = map[string]string{
 	"TurnFailedEvent":                     "TurnFailedEvent",
 	"TurnStartedEvent":                    "TurnStartedEvent",
 
+	// Types the session and file surface reaches. Their schemas are declared, so
+	// the gate covers them; the file routes themselves declare no shape at all and
+	// are named in doc.go instead.
+	"AgentObject":                 "AgentObject",
+	"ChildSessionList":            "ChildSessionList",
+	"ChildSessionSummary":         "ChildSessionSummary",
+	"CompactionData":              "CompactionData",
+	"ConversationDeleted":         "ConversationDeleted",
+	"ConversationItem":            "ConversationItem",
+	"ErrorData":                   "ErrorData",
+	"FunctionCallData":            "FunctionCallData",
+	"FunctionCallOutputData":      "FunctionCallOutputData",
+	"MCPServerSummary":            "MCPServerSummary",
+	"MessageData":                 "MessageData",
+	"NativeModelOption":           "NativeModelOption",
+	"NativeReasoningEffortOption": "NativeReasoningEffortOption",
+	"NativeToolData":              "NativeToolData",
+	"PaginatedList":               "PaginatedList",
+	"PolicySummary":               "PolicySummary",
+	"ReasoningData":               "ReasoningData",
+	"ResourceEventData":           "ResourceEventData",
+	"RoutingDecisionData":         "RoutingDecisionData",
+	"SandboxStatus":               "SandboxStatus",
+	"SessionForkRequest":          "SessionForkRequest",
+	"SessionList":                 "SessionList",
+	"SessionListItem":             "SessionListItem",
+	"SessionResponse":             "SessionResponse",
+	"SkillSummary":                "SkillSummary",
+	"SlashCommandData":            "SlashCommandData",
+	"TerminalCommandData":         "TerminalCommandData",
+	"UpdateSessionRequest":        "UpdateSessionRequest",
+
 	// Support types the event union reaches.
 	"ConversationRef":             "ConversationRef",
 	"ElicitationRequestParams":    "ElicitationRequestParams",
