@@ -89,10 +89,16 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
+      # The floor rather than stable, and pinned on purpose. golangci-lint builds
+      # IR for the standard library of whatever toolchain runs it, so a Go release
+      # can break it with no change here: 1.27 rolled out to `stable` and v2.12.2
+      # panicked on internal/poll with "unexpected expr: *ast.KeyValueExpr",
+      # failing every branch at once. Both pins move together, deliberately —
+      # raising the toolchain here means checking the linter survives it.
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: stable
+          go-version: '1.25.x'
           cache-dependency-path: go.mod
 
       # Installed with `go install` rather than golangci-lint's own action so
