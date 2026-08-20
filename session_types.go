@@ -921,3 +921,19 @@ type UpdateSessionRequest struct {
 	// New title, e.g. "debugging auth flow". nil leaves unchanged.
 	Title *string `json:"title,omitempty"`
 }
+
+// SessionGitOptions is the git worktree options for POST /v1/sessions.
+type SessionGitOptions struct {
+	// Optional base ref to branch from, e.g. "main" or "origin/main". nil branches from the
+	// source repository's current HEAD. Create mode only — invalid with existing_worktree.
+	BaseBranch *string `json:"base_branch,omitempty"`
+
+	// In create mode, the new branch to create and check out, e.g. "feature/login". In bind
+	// mode, the branch already checked out in the existing worktree. Validated against git
+	// ref-format rules; invalid names fail with invalid_input.
+	BranchName string `json:"branch_name"`
+
+	// When true, bind to the pre-existing worktree at workspace instead of creating one (see
+	// above).
+	ExistingWorktree *bool `json:"existing_worktree,omitempty"`
+}

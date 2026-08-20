@@ -62,9 +62,23 @@
 // can be silent about one it does not.
 //
 // The consequence to keep in mind: a route or field the document does not carry is
-// a hand-written contract nothing checks. The events route is registered
-// include_in_schema=false, so its body and responses appear nowhere in the
-// document. Anything reached that way is named here as it arrives.
+// a hand-written contract nothing checks, in either direction. Four are reached
+// today, and each is named where it is used.
+//
+// The events route is registered include_in_schema=false, so neither its body nor
+// its responses appear in the document. [SessionEventInput] and [EventAccepted]
+// are this package's own statement of that shape, and [Sessions.Interrupt] and
+// [Sessions.Compact] ride it.
+//
+// The create route takes a raw body and dispatches on Content-Type, so the
+// document carries no request schema and [SessionCreateRequest] is hand-written.
+//
+// The session file routes publish an empty response schema, so [SessionFile] is
+// hand-written and the file surface sits wholly outside the gate. It keeps the
+// decoded body on [SessionFile.Raw] for that reason.
+//
+// The agent and item listings type their payload as heterogeneous, so
+// [Sessions.ListAgents] and [Sessions.ListItems] narrow it by hand.
 //
 // # Timeouts
 //

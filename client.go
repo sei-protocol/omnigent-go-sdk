@@ -698,3 +698,89 @@ func (c *Client) doJSON(
 	}
 	return nil
 }
+
+// doUpload sends a streamed body under a caller-supplied content type.
+//
+// Separate from [Client.doJSON] because that one encodes a value into memory
+// before sending, which is exactly what an upload must not do. The body here is a
+// reader the transport drains, so the request holds one buffer rather than the
+// whole file.
+func (c *Client) doUpload(ctx context.Context, segments []string, contentType string, body io.Reader, out any) error {
+	target, err := c.resolve(segments, nil)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), body)
+	if err != nil {
+		return fmt.Errorf("build POST %s request: %w", target.Path, err)
+	}
+	for name, values := range c.header {
+		req.Header[name] = append([]string(nil), values...)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.unary.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", target.Path, stripRedirectURL(err))
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return newAPIError(resp)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode POST %s response: %w", target.Path, err)
+	}
+	return nil
+}
+
+// doDownload copies a response body to w, refusing to write past maxBytes.
+//
+// It reads one byte past the bound on purpose. Stopping exactly at the limit
+// cannot tell a file that fits from one that was truncated, and reporting a
+// truncated download as a complete one is the failure worth avoiding.
+func (c *Client) doDownload(ctx context.Context, segments []string, w io.Writer, maxBytes int64) (int64, error) {
+	target, err := c.resolve(segments, nil)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("build GET %s request: %w", target.Path, err)
+	}
+	for name, values := range c.header {
+		req.Header[name] = append([]string(nil), values...)
+	}
+
+	// The unary client, not the streaming one: a download is a bounded exchange,
+	// so the whole-exchange timeout is the bound a caller wants.
+	resp, err := c.unary.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("GET %s: %w", target.Path, stripRedirectURL(err))
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, newAPIError(resp)
+	}
+
+	written, err := io.Copy(w, io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return written, fmt.Errorf("GET %s: read body: %w", target.Path, err)
+	}
+	if written > maxBytes {
+		return maxBytes, fmt.Errorf("GET %s: %w: body exceeds the caller's %d-byte bound",
+			target.Path, ErrInvalidArgument, maxBytes)
+	}
+	return written, nil
+}
