@@ -9,6 +9,4 @@ package omnigent
 //
 //	client.SetModelOverride(ctx, id, omnigent.Ptr(""))   // clear the override
 //	client.SetModelOverride(ctx, id, nil)                // leave it alone
-//
-// It lives in its own file because it belongs to no one type.
 func Ptr[T any](v T) *T { return &v }

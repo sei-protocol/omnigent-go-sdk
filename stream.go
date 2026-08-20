@@ -59,7 +59,7 @@ type StreamOptions struct {
 	// like — or not at all, if the stream ends before delivering an event.
 	// Returning an error ends the stream with that error wrapped.
 	//
-	// Seeding the first turn through [SessionCreateRequest.InitialItems] avoids
+	// Seeding the first turn through a session's initial items avoids
 	// needing this at all; it is the second and later turns that do.
 	//
 	// The second parameter is a struct rather than a growing parameter list
@@ -166,7 +166,7 @@ type Subscription struct {
 //
 // Ending without an error means the server closed the subscription cleanly. In
 // practice that means the server is shutting down rather than that the turn
-// finished — turn completion is a [CompletedEvent] and its siblings. Every other
+// finished — turn completion is a [ResponseCompletedEvent] and its siblings. Every other
 // ending is an error: [ErrStreamInterrupted] for a body that stopped without the
 // terminal sentinel, [ErrStreamIdle] for silence past the timeout, ctx's error
 // for cancellation, or an [APIError] if the subscription was refused outright.

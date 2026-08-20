@@ -149,7 +149,7 @@ const maxErrorFieldRunes = 200
 //		// back off
 //	}
 //
-// The sentinels above remain the better match for a class of failure this API
+// The sentinels in this file remain the better match for a class of failure this API
 // actually distinguishes. Reach for Error when the status itself is what matters,
 // and for [APIError] when the server's own code, title or remediation is.
 type Error interface {
@@ -164,8 +164,7 @@ type Error interface {
 var _ Error = (*APIError)(nil)
 
 // maxErrorBodyBytes caps how much of a failed response this package retains or
-// drains. It lives here rather than beside the transport because every reader of
-// it is an error path.
+// drains.
 const maxErrorBodyBytes = 64 << 10
 
 // APIError is a non-2xx response from the server.
@@ -198,7 +197,7 @@ const maxErrorBodyBytes = 64 << 10
 // enumerate, so treat Header as untrusted for logging too.
 type APIError struct {
 	// StatusCode is the HTTP status. It, not the message text, is what the
-	// sentinels above are matched on.
+	// sentinels are matched on.
 	StatusCode int
 
 	// Code is the server's own error code — "not_found", "runner_unavailable",
@@ -247,7 +246,7 @@ type APIError struct {
 
 	// Header is the response's headers, less the ones that carry a credential:
 	// see this type's doc. It is here for the correlation and rate-limit headers
-	// a deployment may add beyond the two called out above. Nil is possible; use
+	// a deployment may add beyond the two this type documents. Nil is possible; use
 	// Header.Get, which tolerates it.
 	Header http.Header
 }

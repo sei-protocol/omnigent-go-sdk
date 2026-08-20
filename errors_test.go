@@ -271,8 +271,8 @@ func TestAPIErrorMessage(t *testing.T) {
 func TestAPIErrorMessageNeverRendersTheBody(t *testing.T) {
 	t.Parallel()
 
-	// A multi-byte body long enough that the old 256-byte preview would have
-	// truncated it, and short enough that a naive test could miss the leak.
+	// A multi-byte body longer than any preview bound, so a leak of any prefix
+	// shows up, and short enough that a naive test could still miss it.
 	body := strings.Repeat("é", 4096)
 	apiErr := &APIError{StatusCode: 500, Body: []byte(body)}
 	message := apiErr.Error()

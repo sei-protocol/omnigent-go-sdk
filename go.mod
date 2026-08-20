@@ -9,9 +9,8 @@ module github.com/sei-protocol/omnigent-go-sdk
 // a dependency declares. There are no dependencies now, so the floor is ours
 // alone to justify.
 //
-// No `toolchain` directive, but not for the reason once written here. A
-// dependency's toolchain line does not reach its consumers — a consumer under
-// GOTOOLCHAIN=auto ignores it and builds with the Go it has. The directive is
-// simply nothing a library needs to state, and a stdlib advisory is keyed to the
-// toolchain that builds, which a library never controls.
+// No `toolchain` directive. A dependency's toolchain line does not reach its
+// consumers — a consumer under GOTOOLCHAIN=auto ignores it and builds with the Go
+// it has — so it is nothing a library needs to state. A stdlib advisory is keyed
+// to the toolchain that builds, which a library never controls.
 go 1.23.0

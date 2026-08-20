@@ -1,12 +1,5 @@
 package omnigent
 
-// Support types the event union reaches. Each one mirrors a schema in
-// spec/openapi.json, and [TestEveryDeclaredFieldExistsInTheSpec] holds them to it.
-//
-// Every optional field is a pointer, so a caller can tell "the server sent zero"
-// from "the server sent nothing". Slices and maps are the exception: nil already
-// carries that distinction, and a pointer to a slice reads badly at a call site.
-
 // ConversationRef is the lightweight reference to a conversation, used in request and response bodies
 // where only the conversation ID is needed.
 type ConversationRef struct {
@@ -33,16 +26,16 @@ type ElicitationRequestParams struct {
 	// Omnigent policy that triggered the elicitation, e.g. "approve_shell_commands".
 	PolicyName *string `json:"policy_name,omitempty"`
 
-	// JSON-Schema dict for form mode (or None for url mode). camelCase preserved per MCP spec,
+	// JSON-Schema dict for form mode (or nil for url mode). camelCase preserved per MCP spec,
 	// e.g. {"type": "object", "properties": {"approve": {"type": "boolean"}}}.
 	RequestedSchema map[string]any `json:"requestedSchema,omitempty"`
 
 	// AP session whose resolve endpoint owns this elicitation, e.g. "conv_child123". Present
-	// when a child/sub-agent prompt is mirrored into an ancestor stream; None means resolve
+	// when a child/sub-agent prompt is mirrored into an ancestor stream; nil means resolve
 	// against the current session.
 	TargetSessionID *string `json:"target_session_id,omitempty"`
 
-	// External URL for url mode (or None for form mode), e.g.
+	// External URL for url mode (or nil for form mode), e.g.
 	// "https://oauth.example.com/authorize?...".
 	URL *string `json:"url,omitempty"`
 }
@@ -58,7 +51,7 @@ type ErrorDetail struct {
 	// Human-readable error description. Always populated; older clients render this verbatim.
 	Message string `json:"message"`
 
-	// Optional concrete next step to fix it, e.g. a command to run. None when there is no
+	// Optional concrete next step to fix it, e.g. a command to run. nil when there is no
 	// single clear fix.
 	Remediation *string `json:"remediation,omitempty"`
 
@@ -76,7 +69,7 @@ type IncompleteDetails struct {
 
 // MCPServerStartup is one MCP server's startup state within a session.mcp_startup event.
 type MCPServerStartup struct {
-	// Failure detail when status == "failed", e.g. "handshaking with MCP server failed". None
+	// Failure detail when status == "failed", e.g. "handshaking with MCP server failed". nil
 	// otherwise.
 	Error *string `json:"error,omitempty"`
 
@@ -87,27 +80,27 @@ type MCPServerStartup struct {
 
 // ModelUsage is the cumulative token/cost usage attributed to a single LLM model.
 type ModelUsage struct {
-	// Cumulative tokens written to the prompt cache, e.g. 2000. None when not recorded.
+	// Cumulative tokens written to the prompt cache, e.g. 2000. nil when not recorded.
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 
-	// Cumulative tokens read from the prompt cache, e.g. 8000. None when not recorded.
+	// Cumulative tokens read from the prompt cache, e.g. 8000. nil when not recorded.
 	CacheReadInputTokens *int `json:"cache_read_input_tokens,omitempty"`
 
 	// Cumulative non-cached input (prompt) tokens for this model over the subtree, e.g. 12000.
-	// None when not recorded.
+	// nil when not recorded.
 	InputTokens *int `json:"input_tokens,omitempty"`
 
-	// Cumulative output (completion) tokens, e.g. 3400. None when not recorded.
+	// Cumulative output (completion) tokens, e.g. 3400. nil when not recorded.
 	OutputTokens *int `json:"output_tokens,omitempty"`
 
 	// Cumulative USD spend attributed to this model, e.g. 0.42. Present **only when this
 	// model's turns were priced** (same "priced ⟺ key present" contract as the session total);
-	// None when the model is unpriced, so the sum of priced per-model costs equals the session
+	// nil when the model is unpriced, so the sum of priced per-model costs equals the session
 	// total_cost_usd.
 	TotalCostUsd *float64 `json:"total_cost_usd,omitempty"`
 
 	// Cumulative total tokens (counts cache buckets too, as the harness reports), e.g. 15400.
-	// None when not recorded.
+	// nil when not recorded.
 	TotalTokens *int `json:"total_tokens,omitempty"`
 }
 
@@ -132,7 +125,7 @@ type ResponseObject struct {
 	// Whether this response was created as a background task.
 	Background *bool `json:"background,omitempty"`
 
-	// Unix epoch timestamp of completion, or None if not yet complete.
+	// Unix epoch timestamp of completion, or nil if not yet complete.
 	CompletedAt *int `json:"completed_at,omitempty"`
 
 	// Reference to the owning conversation.
@@ -150,7 +143,7 @@ type ResponseObject struct {
 	// Details if the response is incomplete (e.g. hit token limit).
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
 
-	// Per-request system instructions override, or None.
+	// Per-request system instructions override, or nil.
 	Instructions *string `json:"instructions,omitempty"`
 
 	// Agent name that produced this response, e.g. "research-agent".
@@ -163,7 +156,7 @@ type ResponseObject struct {
 	// shape varies by item type. Empty for non-completed responses.
 	Output []map[string]any `json:"output,omitempty"`
 
-	// ID of the prior response in the conversation thread, or None for the first turn.
+	// ID of the prior response in the conversation thread, or nil for the first turn.
 	PreviousResponseID *string `json:"previous_response_id,omitempty"`
 
 	// Reasoning configuration, e.g. {"effort": "medium"}.
@@ -173,10 +166,11 @@ type ResponseObject struct {
 	// "cancelled".
 	Status string `json:"status"`
 
-	// Whether this response is persisted. Always True.
+	// Whether the server persists this response. True whenever the server sets it,
+	// and nil when it does not.
 	Store *bool `json:"store,omitempty"`
 
-	// Token usage statistics, or None if not yet available.
+	// Token usage statistics, or nil if not yet available.
 	Usage *Usage `json:"usage,omitempty"`
 }
 
@@ -186,7 +180,7 @@ type RetryErrorDetail struct {
 	Code string `json:"code"`
 
 	// Optional provider-specific structured fields (e.g. {"status_code": 429, "retry_after":
-	// 5}); None when the classifier had no extra context.
+	// 5}); nil when the classifier had no extra context.
 	Detail map[string]any `json:"detail,omitempty"`
 
 	// Human-readable summary, e.g. "Connection timed out after 30s".
@@ -201,7 +195,7 @@ type SessionInputConsumedPayload struct {
 	// of by position.
 	ClearedPendingID *string `json:"cleared_pending_id,omitempty"`
 
-	// Email of the human actor who posted the item, e.g. "alice@example.com". None for
+	// Email of the human actor who posted the item, e.g. "alice@example.com". nil for
 	// agent/tool/system items and single-user mode. Mirrors ConversationItem.to_api_dict for
 	// live attribution.
 	CreatedBy *string `json:"created_by,omitempty"`
@@ -230,14 +224,14 @@ type SessionInterruptedPayload struct {
 // Usage is the token usage statistics for a response.
 type Usage struct {
 	// Prompt tokens written to the provider prompt cache (cache creation), billed at a premium
-	// rate. Like cache_read_input_tokens, this is separate from input_tokens; 0 when not
-	// reported.
+	// rate. Like cache_read_input_tokens, this is separate from input_tokens; nil when
+	// the server did not report it.
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 
 	// Prompt tokens served from a provider prompt cache (cache hit), billed at a reduced rate.
 	// Reported by Anthropic-style providers as a count *separate* from input_tokens (which
-	// carries only the non-cached portion); 0 when the provider does not break out cache
-	// usage. Consumed by the cache-aware server-side cost path.
+	// carries only the non-cached portion); nil when the provider does not break out
+	// cache usage. Consumed by the cache-aware server-side cost path.
 	CacheReadInputTokens *int `json:"cache_read_input_tokens,omitempty"`
 
 	// Context-fill estimate for the next turn — set only by executors that make multiple LLM

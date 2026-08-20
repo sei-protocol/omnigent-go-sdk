@@ -899,13 +899,10 @@ func TestIdleWatchdogIgnoresAnExpiryThatDataBeat(t *testing.T) {
 // TestIdleWatchdogStillFiresOnRealSilence is the other half: with no activity
 // recorded inside the timeout, the expiry must cancel.
 //
-// It used to say so with a one-nanosecond timeout, on the reasoning that one
-// nanosecond is "already in the past by the time check runs". The wall clock does
-// not promise that — time.Now's resolution is coarser than a nanosecond on some
-// platforms, and the two readings could be equal — so the test failed about a
-// third of the time without -race. It now drives the watchdog's clock instead,
-// which states the condition rather than racing it: no sleeping, no scheduler,
-// the same answer every run.
+// It drives the watchdog's clock rather than sleeping, so the condition is
+// stated instead of raced: no scheduler, the same answer every run. A wall-clock
+// timeout cannot state it, because time.Now's resolution is coarser than a
+// nanosecond on some platforms and two readings can be equal.
 func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 	t.Parallel()
 

@@ -368,9 +368,9 @@ func collectSeq(stream func(yield func(Event, error) bool)) ([]Event, error) {
 }
 
 // TestRedirectsNeverCarryAttackerChosenBasicAuth is the maintainer's finding on
-// #4010: New refuses a base URL with userinfo because net/http turns it into an
-// Authorization: Basic header, and checkRedirect did not apply the same rule to a
-// Location it was handed.
+// checkRedirect refuses a Location carrying userinfo, because net/http turns it
+// into an Authorization: Basic header on the replayed request — the same rule New
+// applies to a base URL.
 //
 // The hop here clears every other gate — same host, same port, same scheme, same
 // method — so the userinfo arm is the only thing that can reject it. net/http

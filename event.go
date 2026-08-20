@@ -27,7 +27,7 @@ import (
 // [SessionInputConsumedEvent]. The rest — elicitation and approval flows,
 // compaction, files, and session-metadata nudges — can be ignored without loss
 // for that scope. That response.* lifecycle is not the whole terminal story;
-// see below.
+// see the terminal-edge note below in this comment.
 //
 // Five things about the stream shape are easy to get wrong:
 //
@@ -246,7 +246,7 @@ func (BrowserActionRequestEvent) isEvent() {}
 //
 // Server-side request that the client cancel a tunneled tool call.
 type ClientTaskCancelEvent struct {
-	// Synthetic call_id the SDK uses to reconcile the local task; None when no pending tool
+	// Synthetic call_id the SDK uses to reconcile the local task; nil when no pending tool
 	// call row exists for the task.
 	CallID         *string `json:"call_id,omitempty"`
 	SequenceNumber *int    `json:"sequence_number,omitempty"`
@@ -267,16 +267,16 @@ type CompactionCompletedEvent struct {
 	CompactedMessages []map[string]any `json:"compacted_messages,omitempty"`
 	SequenceNumber    *int             `json:"sequence_number,omitempty"`
 
-	// Text summary of the compacted conversation, or None for server-side compaction (already
+	// Text summary of the compacted conversation, or nil for server-side compaction (already
 	// persisted).
 	Summary *string `json:"summary,omitempty"`
 
-	// Model used for summarization, or None if truncation-based or server-side.
+	// Model used for summarization, or nil if truncation-based or server-side.
 	SummaryModel *string `json:"summary_model,omitempty"`
 
 	// Tiktoken estimate of the post-compaction message context size, e.g. 8421. Used by
 	// clients to update the context-ring immediately without waiting for the next
-	// response.completed usage report. None when token counting is unavailable.
+	// response.completed usage report. nil when token counting is unavailable.
 	TotalTokens *int `json:"total_tokens,omitempty"`
 
 	// Type is always "response.compaction.completed".
@@ -361,7 +361,7 @@ type ErrorEvent struct {
 	// tool failures (currently emitted by retry exhaustion paths).
 	Source string `json:"source"`
 
-	// Tool identifier when source == "tool"; None for the other sources.
+	// Tool identifier when source == "tool"; nil for the other sources.
 	ToolName *string `json:"tool_name,omitempty"`
 
 	// Type is always "response.error".
@@ -404,14 +404,14 @@ func (IncompleteEvent) isEvent() {}
 //
 // A streamed file output completed materializing.
 type OutputFileDoneEvent struct {
-	// MIME content type if the annotation supplied one, e.g. "application/pdf". None
+	// MIME content type if the annotation supplied one, e.g. "application/pdf". nil
 	// otherwise.
 	ContentType *string `json:"content_type,omitempty"`
 
 	// Identifier of the materialized file, e.g. "file_abc123".
 	FileID string `json:"file_id"`
 
-	// Original filename if the annotation supplied one, e.g. "report.pdf". None otherwise.
+	// Original filename if the annotation supplied one, e.g. "report.pdf". nil otherwise.
 	Filename       *string `json:"filename,omitempty"`
 	SequenceNumber *int    `json:"sequence_number,omitempty"`
 
@@ -447,12 +447,12 @@ type OutputTextDeltaEvent struct {
 	// Optional provider completion marker for the message.
 	Final *bool `json:"final,omitempty"`
 
-	// 0-based chunk order within the message, e.g. 3. Used to suppress repeated chunks; None
+	// 0-based chunk order within the message, e.g. 3. Used to suppress repeated chunks; nil
 	// for in-process streaming.
 	Index *int `json:"index,omitempty"`
 
 	// For native terminal streaming, the provider's stable per-message id, e.g.
-	// "2ca51d97-2f0f-493a-aed7-85a5b56c5747". None for ordinary in-process task streaming,
+	// "2ca51d97-2f0f-493a-aed7-85a5b56c5747". nil for ordinary in-process task streaming,
 	// where deltas group by the active response.
 	MessageID      *string `json:"message_id,omitempty"`
 	SequenceNumber *int    `json:"sequence_number,omitempty"`
@@ -598,13 +598,13 @@ func (ResponseFailedEvent) isEvent() {}
 //
 // Keepalive event emitted on a fixed cadence during streaming.
 type ResponseHeartbeatEvent struct {
-	// Sequence number of the last non- heartbeat event seen on the same stream, e.g. 42. None
+	// Sequence number of the last non- heartbeat event seen on the same stream, e.g. 42. nil
 	// before any user-visible event has fired (first heartbeat of the turn, before deltas
 	// land), or when the producer chose not to populate it.
 	LastEventSeq   *int `json:"last_event_seq,omitempty"`
 	SequenceNumber *int `json:"sequence_number,omitempty"`
 
-	// ISO 8601 UTC timestamp at emission, e.g. "2026-04-27T15:30:00Z". None when the producer
+	// ISO 8601 UTC timestamp at emission, e.g. "2026-04-27T15:30:00Z". nil when the producer
 	// chose not to populate it (legacy emitters).
 	ServerTime *string `json:"server_time,omitempty"`
 
@@ -636,7 +636,7 @@ type RetryEvent struct {
 	// retries.
 	Source string `json:"source"`
 
-	// Tool identifier when source == "tool", e.g. "search.web". None for LLM retries.
+	// Tool identifier when source == "tool", e.g. "search.web". nil for LLM retries.
 	ToolName *string `json:"tool_name,omitempty"`
 
 	// Type is always "response.retry".
@@ -654,7 +654,7 @@ type SessionAgentChangedEvent struct {
 
 	// Display name of the agent the session now runs, e.g. "claude-native-ui". Deliberately
 	// the clean target-agent name — not the clone row's "… (switch ag_…)" disambiguation name
-	// — because clients render it verbatim. Category: **transient** (SSE-only).
+	// — because clients render it verbatim. Category: transient (SSE-only).
 	AgentName string `json:"agent_name"`
 
 	// Session identifier, e.g. "conv_abc123".
@@ -713,7 +713,7 @@ type SessionCollaborationModeEvent struct {
 	// Session identifier, e.g. "conv_abc123".
 	ConversationID string `json:"conversation_id"`
 
-	// The active collaboration mode string, e.g. "plan" or "default". Category: **transient**
+	// The active collaboration mode string, e.g. "plan" or "default". Category: transient
 	// (SSE-only). The server also writes omnigent.codex_native.collaboration_mode on the
 	// conversation labels, so reconnect clients restore the same state from the session
 	// snapshot.
@@ -730,7 +730,7 @@ func (SessionCollaborationModeEvent) isEvent() {}
 //
 // A child (sub-agent) session was spawned from this session.
 type SessionCreatedEvent struct {
-	// Registered agent id the child runs as, e.g. "agent_xyz". None is permitted only for
+	// Registered agent id the child runs as, e.g. "agent_xyz". nil is permitted only for
 	// legacy spawn paths that did not record an agent id; new code MUST set it.
 	AgentID *string `json:"agent_id,omitempty"`
 
@@ -745,7 +745,7 @@ type SessionCreatedEvent struct {
 	// Echo of conversation_id for consumers that key on a dedicated "parent" field rather than
 	// the carrier conversation_id. Always equal to conversation_id; included for forward-
 	// compat with clients that may relay these events across stream boundaries. Category:
-	// **transient** (SSE-only).
+	// transient (SSE-only).
 	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	SequenceNumber  *int    `json:"sequence_number,omitempty"`
 
@@ -761,7 +761,7 @@ func (SessionCreatedEvent) isEvent() {}
 type SessionHeartbeatEvent struct {
 	SequenceNumber *int `json:"sequence_number,omitempty"`
 
-	// ISO 8601 UTC timestamp at emission, e.g. "2026-05-25T10:30:00Z". None when the producer
+	// ISO 8601 UTC timestamp at emission, e.g. "2026-05-25T10:30:00Z". nil when the producer
 	// chose not to populate it.
 	ServerTime *string `json:"server_time,omitempty"`
 
@@ -807,8 +807,8 @@ type SessionMcpStartupEvent struct {
 	ConversationID string `json:"conversation_id"`
 	SequenceNumber *int   `json:"sequence_number,omitempty"`
 
-	// Latest per-server startup map, e.g. {"safe": {"status": "starting", "error": None}}.
-	// Category: **transient** (SSE + snapshot cache). Not persisted; a client connecting mid-
+	// Latest per-server startup map, e.g. {"safe": {"status": "starting", "error": null}}.
+	// Category: transient (SSE + snapshot cache). Not persisted; a client connecting mid-
 	// startup seeds from the session snapshot's mcp_startup field and updates live off this
 	// event.
 	Servers map[string]MCPServerStartup `json:"servers"`
@@ -828,7 +828,7 @@ type SessionModelEvent struct {
 
 	// Tier alias the session is now on, e.g. "opus" — Claude Code's version-agnostic alias,
 	// matching the picker's vocabulary (not a pinned "claude-opus-4-8" id). Category:
-	// **transient** (SSE-only).
+	// transient (SSE-only).
 	Model          string `json:"model"`
 	SequenceNumber *int   `json:"sequence_number,omitempty"`
 
@@ -842,7 +842,7 @@ func (SessionModelEvent) isEvent() {}
 //
 // Signal that a native session's model catalog has resolved.
 type SessionModelOptionsEvent struct {
-	// Session identifier, e.g. "conv_abc123". Category: **transient** (SSE-only). On
+	// Session identifier, e.g. "conv_abc123". Category: transient (SSE-only). On
 	// reconnect, clients seed Native model / effort controls from the session snapshot.
 	ConversationID string `json:"conversation_id"`
 	SequenceNumber *int   `json:"sequence_number,omitempty"`
@@ -880,8 +880,8 @@ type SessionReasoningEffortEvent struct {
 	// Session identifier, e.g. "conv_abc123".
 	ConversationID string `json:"conversation_id"`
 
-	// Reasoning effort now active for the session, e.g. "medium", or None when Codex cleared
-	// to its default. Category: **transient** (SSE-only). The server also writes
+	// Reasoning effort now active for the session, e.g. "medium", or nil when Codex cleared
+	// to its default. Category: transient (SSE-only). The server also writes
 	// reasoning_effort on the conversation, so on reconnect clients restore the selection from
 	// the session snapshot rather than from a replayed event.
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
@@ -935,7 +935,7 @@ type SessionSandboxStatusEvent struct {
 	ConversationID string `json:"conversation_id"`
 
 	// Failure detail when stage == "failed", e.g. "managed sandbox launch failed: spend limit
-	// reached". None otherwise. Category: **transient** (SSE-only).
+	// reached". nil otherwise. Category: transient (SSE-only).
 	Error          *string `json:"error,omitempty"`
 	SequenceNumber *int    `json:"sequence_number,omitempty"`
 
@@ -953,7 +953,7 @@ func (SessionSandboxStatusEvent) isEvent() {}
 //
 // Signal that a session's runner-owned skills have resolved.
 type SessionSkillsEvent struct {
-	// Session identifier, e.g. "conv_abc123". Category: **transient** (SSE-only). On
+	// Session identifier, e.g. "conv_abc123". Category: transient (SSE-only). On
 	// reconnect, clients seed the menu from the session snapshot's skills field, which is
 	// populated by the runner-skills cache at snapshot build time.
 	ConversationID string `json:"conversation_id"`
@@ -983,12 +983,12 @@ type SessionStatusEvent struct {
 	// Machine-readable failure detail, present only when status == "failed". Carries the
 	// message the runner attached when a turn died — most importantly a SETUP-phase failure
 	// (spec resolution, spawn-env build) that ends the turn before any response.failed event
-	// is emitted. None for every non-failed transition.
+	// is emitted. nil for every non-failed transition.
 	Error *ErrorDetail `json:"error,omitempty"`
 
 	// Optional active response id for terminal-backed integrations, e.g. "codex_turn_abc123".
 	// Clients use it to associate coarse session status edges with the assistant bubble they
-	// describe. None for ordinary in-process runtime edges.
+	// describe. nil for ordinary in-process runtime edges.
 	ResponseID     *string `json:"response_id,omitempty"`
 	SequenceNumber *int    `json:"sequence_number,omitempty"`
 
@@ -1049,8 +1049,8 @@ type SessionTerminalPendingEvent struct {
 	// Session identifier, e.g. "conv_abc123".
 	ConversationID string `json:"conversation_id"`
 
-	// True while the terminal is being created; False once it lands or auto-create fails.
-	// Category: **transient** (SSE-only). On reconnect, clients seed the spinner from the
+	// true while the terminal is being created; false once it lands or auto-create fails.
+	// Category: transient (SSE-only). On reconnect, clients seed the spinner from the
 	// session snapshot's terminal_pending field, which is populated by
 	// _session_terminal_pending_cache at snapshot build time.
 	Pending        bool `json:"pending"`
@@ -1073,7 +1073,7 @@ type SessionTodosEvent struct {
 	// Current todo items read from Claude's todo file. Each entry is a raw dict with content
 	// (str), status ("pending" | "in_progress" | "completed"), and activeForm (str, the gerund
 	// form) keys, e.g. [{"content": "Fix the bug", "status": "in_progress", "activeForm":
-	// "Fixing the bug"}]. Category: **transient** (SSE-only).
+	// "Fixing the bug"}]. Category: transient (SSE-only).
 	Todos []map[string]any `json:"todos"`
 
 	// Type is always "session.todos".
@@ -1086,12 +1086,12 @@ func (SessionTodosEvent) isEvent() {}
 //
 // Token-usage update from a terminal-backed integration.
 type SessionUsageEvent struct {
-	// input + cache_creation + cache_read from the latest assistant message.usage. None on a
+	// input + cache_creation + cache_read from the latest assistant message.usage. nil on a
 	// window-only broadcast.
 	ContextTokens *int `json:"context_tokens,omitempty"`
 
 	// Resolved window in tokens (e.g. 200_000 normally, 1_000_000 with opus[1m] / sonnet[1m]).
-	// None on a tokens-only broadcast.
+	// nil on a tokens-only broadcast.
 	ContextWindow *int `json:"context_window,omitempty"`
 
 	// Session identifier.
@@ -1106,9 +1106,9 @@ type SessionUsageEvent struct {
 	Type string `json:"type"`
 
 	// Per-model breakdown of the same subtree usage after this update, keyed by raw harness
-	// model id, e.g. {"claude-sonnet-4-6": ModelUsage(input_tokens=12000, ...)}. None
+	// model id, e.g. {"claude-sonnet-4-6": ModelUsage(input_tokens=12000, ...)}. null
 	// (stripped by exclude_none) on a broadcast that carries no per-model change, so the
-	// client keeps its cached map. Category: **transient** (SSE-only).
+	// client keeps its cached map. Category: transient (SSE-only).
 	UsageByModel map[string]ModelUsage `json:"usage_by_model,omitempty"`
 }
 

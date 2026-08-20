@@ -1,16 +1,39 @@
-// Package omnigent is a Go client for the omnigent server.
+// Package omnigent is a Go client library for the omnigent server.
 //
-// # Scope of this milestone
+// # Scope
 //
-// This package is being rebuilt to match the shape of the upstream Python client
-// in omnigent-ai/omnigent, under sdks/python-client. That client is an
-// agent-interaction library; this one was a typed transport, and the rebuild
-// closes the difference.
+// This release carries [Client] and its options, the redirect and credential
+// policy, the error surface, the 52-variant [Event] union, and [Client.Stream]
+// for reading one session's server-sent events.
 //
-// What is here now is the foundation: [Client] and its options, the redirect
-// policy, the error surface, the event union, and [Client.Stream]. The session
-// surface, files, the turn loop, transcript blocks and caller-side tool dispatch
-// arrive in the milestones after this one.
+// There is no session, files, turn-loop, transcript-block or tool-dispatch
+// surface. A caller needing those reaches the routes directly.
+// docs/adr/0001-rebuild-rather-than-reland.md records why.
+//
+// The public API returns iter.Seq2, so building against this package needs Go
+// 1.23 or newer. go.mod declares that floor and CI builds it.
+//
+//	client, err := omnigent.New("http://127.0.0.1:6767", omnigent.WithBearerToken(token))
+//	if err != nil {
+//		return err
+//	}
+//	defer client.Close()
+//
+//	for event, err := range client.Stream(ctx, sessionID, omnigent.StreamOptions{}) {
+//		if err != nil {
+//			return err
+//		}
+//		if delta, ok := event.(omnigent.OutputTextDeltaEvent); ok {
+//			fmt.Print(delta.Delta)
+//		}
+//	}
+//
+// # Optional fields
+//
+// Every optional field on a type in this package is a pointer, so a caller can
+// tell "the server sent zero" from "the server sent nothing". Slices and maps are
+// the exception: nil already carries that distinction, and a pointer to a slice
+// reads badly at a call site. [Ptr] is how a caller sets one.
 //
 // # Hand-authored types
 //
@@ -31,7 +54,7 @@
 //
 // The consequence to keep in mind: a route or field the document does not carry is
 // a hand-written contract nothing checks. The events route is registered
-// include_in_schema=False, so its body and responses appear nowhere in the
+// include_in_schema=false, so its body and responses appear nowhere in the
 // document. Anything reached that way is named here as it arrives.
 //
 // # Timeouts
@@ -42,17 +65,12 @@
 // a whole-exchange timeout, and the streaming client's is zero.
 //
 // The unary bound defaults to 90 seconds, and [WithUnaryTimeout] moves it. It is
-// that long because the two slowest routes wait on a runner before they answer
-// and neither sends a byte early, so the client's deadline has to clear the
-// server's own inner budgets or it aborts calls the server was still going to
-// answer. Posting an event waits up to 5 seconds for the stream relay to
-// subscribe and then forwards to the runner under a 60-second read timeout — 30
-// seconds on the native-terminal path. Creating a session notifies the runner
-// (10 seconds) and may wait 30 more for a host to launch one; giving up there is
-// the worse failure, because the id of a session the server goes on to create is
-// lost, which leaks it. A deadline for one call still belongs on that call's
-// context: this bound is the backstop against a wedged connection, not a latency
-// policy.
+// that long because the slowest routes wait on a runner before they answer and
+// send no byte early, so a shorter deadline aborts calls the server was still
+// going to answer — and abandoning a session create leaks the session the server
+// goes on to make. The arithmetic behind the number sits beside the constant in
+// client.go. A deadline for one call still belongs on that call's context: this
+// bound is the backstop against a wedged connection, not a latency policy.
 //
 // Liveness on the stream is enforced instead by an idle watchdog — the server
 // emits a heartbeat frame every 15 seconds of queue silence, so a read that

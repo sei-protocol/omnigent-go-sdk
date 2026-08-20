@@ -4,18 +4,21 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// This file is the gate that replaces the deleted generator's own.
+// These tests hold the hand-authored types to spec/openapi.json.
 //
-// The generator proved the types matched spec/openapi.json in both directions and
-// needed 162 exported symbols to do it. These tests prove the one direction that
-// can hurt a caller: this package never declares a field the server does not
-// have. They deliberately do not prove the reverse, because the surface is meant
-// to be smaller than the document.
+// Together they check that every exported field the decoder reaches names a
+// property the description declares, that its Go type and optionality match, and
+// that the decoder's variant set equals the description's discriminator mapping
+// in both directions.
+//
+// They do not check presence. A property the description declares and this
+// package omits passes, deliberately: the surface is meant to be smaller than the
+// document, not equal to it.
 
 // schemaFor names the spec schema each hand-authored type mirrors.
 //
@@ -119,7 +122,9 @@ func declaredProperties(t *testing.T, schemas map[string]any, name string) map[s
 	t.Helper()
 	node, ok := schemas[name].(map[string]any)
 	if !ok {
-		t.Fatalf("spec declares no schema %q", name)
+		// Errorf, not Fatalf: one renamed schema must not hide the other sixty.
+		t.Errorf("spec declares no schema %q", name)
+		return nil
 	}
 	props, ok := node["properties"].(map[string]any)
 	if !ok {
@@ -193,7 +198,7 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	for name := range types {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	for _, goName := range names {
 		schemaName, mapped := schemaFor[goName]
@@ -326,7 +331,7 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	for name := range types {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	for _, goName := range names {
 		schemaName, mapped := schemaFor[goName]
@@ -382,7 +387,7 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 			// pointer and the optionality rule does not apply to it.
 			nilable := got.Kind() == reflect.Slice || got.Kind() == reflect.Map
 
-			if got.Kind() != want && !(want == reflect.Struct && got.Kind() == reflect.Struct) {
+			if got.Kind() != want {
 				t.Errorf("%s.%s is %s, but schema %s declares %q for %q",
 					goName, field.Name, field.Type, schemaName, inner["type"], wire)
 				continue
