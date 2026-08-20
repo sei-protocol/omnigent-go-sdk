@@ -4,17 +4,27 @@ This Software is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 ________________
 
-This Software contains generated code derived from the Omnigent OpenAPI
-specification, which is part of the Omnigent project:
+This Software contains code derived from the Omnigent OpenAPI specification,
+which is part of the Omnigent project:
 
 omnigent - https://github.com/omnigent-ai/omnigent
 Copyright (2026) Databricks, Inc.
 Licensed under the Apache License, Version 2.0.
 
-Specifically, models.gen.go and events.gen.go are produced by
-scripts/gen_go_client.py from spec/openapi.json, a vendored copy of that
-project's specification, and reproduce its schema descriptions as Go doc
-comments.
+Specifically:
+
+  spec/openapi.json is a verbatim vendored copy of that project's OpenAPI
+  document. spec/README.md records the upstream commit it came from.
+
+  types.go, event.go and enums.go declare Go types mirroring that document's
+  schemas, and
+  their doc comments reproduce the document's own schema and property
+  descriptions.
+
+These files were previously produced by a code generator. They are now written
+by hand, which changes how they are maintained and not what they derive from:
+the descriptions are still the upstream project's, so this attribution still
+applies.
 
 Attribution notices in the upstream project's NOTICE file that pertain to its
 Python runtime dependencies are omitted here, as this Software contains no part

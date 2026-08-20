@@ -3,13 +3,14 @@
 # directly and CI's test job runs the same script, so what passes locally cannot
 # drift from what runs on the pull request.
 #
-# The generated-bindings check is deliberately NOT here: it needs python and
-# oapi-codegen, and this script sticks to the Go toolchain. CI runs it as its own
-# job, so a contributor without python is unimpeded and drift is still caught.
+# Drift against the vendored spec is checked by `go test`, not by a separate
+# job: the conformance tests read spec/openapi.json directly and assert that no
+# exported type declares a field the document omits. That needs nothing beyond
+# the Go toolchain, so it belongs here rather than in a job of its own.
 #
-# golangci-lint is deliberately not here. It needs its own install, and it runs
-# in the advisory Go SDK workflow instead; this script sticks to what the Go
-# toolchain already provides so the required job needs nothing extra.
+# golangci-lint is deliberately not here. It needs its own install and runs as
+# its own CI job instead, so this script stays within the Go toolchain and needs
+# nothing extra to run anywhere.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
