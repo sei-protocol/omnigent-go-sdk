@@ -3,6 +3,7 @@ package omnigent
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -383,6 +384,37 @@ func TestEveryRegisteredVariantReportsItsOwnType(t *testing.T) {
 		}
 		if got := ev.EventType(); got != wire {
 			t.Errorf("%T.EventType() = %q, want %q", ev, got, wire)
+		}
+	}
+}
+
+// TestEventUnionIsSealed pins that only this package can add a variant.
+//
+// Asserted by compilation, not at runtime: the declaration below satisfies
+// EventType but not the unexported marker, so it cannot be assigned to Event.
+// Uncommenting the assignment is the test — it must not compile.
+//
+//	type foreignEvent struct{}
+//	func (foreignEvent) EventType() string { return "forged" }
+//	var _ Event = foreignEvent{}   // cannot use foreignEvent as Event
+//
+// The runtime half checks the seal has not been widened by accident: every value
+// the decoder produces is one of this package's own types.
+func TestEventUnionIsSealed(t *testing.T) {
+	t.Parallel()
+
+	pkgPath := reflect.TypeOf(UnknownEvent{}).PkgPath()
+	if pkgPath == "" {
+		t.Fatal("could not determine this package's path")
+	}
+	for wire := range eventRegistry {
+		ev, err := DecodeEvent([]byte(`{"type":"` + wire + `"}`))
+		if err != nil {
+			t.Errorf("DecodeEvent(%s): %v", wire, err)
+			continue
+		}
+		if got := reflect.TypeOf(ev).PkgPath(); got != pkgPath {
+			t.Errorf("%s decoded to a type from %q, outside this package", wire, got)
 		}
 	}
 }
