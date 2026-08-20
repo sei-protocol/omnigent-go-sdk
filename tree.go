@@ -48,6 +48,15 @@ type TreeOptions struct {
 
 	// Concurrency caps how many child listings run at once. Zero means four.
 	Concurrency int
+
+	// MaxNodes caps how many sessions the walk will visit. Zero means one
+	// thousand.
+	//
+	// The walk spawns one goroutine per node, so without this the tree's shape
+	// decides the process's memory. It also bounds the one cost of per-path cycle
+	// detection: a session reachable through two parents is expanded under both,
+	// which is true to the topology and doubles the work for that subtree.
+	MaxNodes int
 }
 
 func (o TreeOptions) withDefaults() TreeOptions {
@@ -57,10 +66,18 @@ func (o TreeOptions) withDefaults() TreeOptions {
 	if o.Concurrency <= 0 {
 		o.Concurrency = 4
 	}
+	if o.MaxNodes <= 0 {
+		o.MaxNodes = 1000
+	}
 	return o
 }
 
 // TreeNode is one session in a subtree walk, with the children the walk reached.
+//
+// A node with no children has one of four reasons, and a caller usually needs to
+// know which: it has none, the walk stopped at the depth cap, the session already
+// appears on the path above it, or its listing failed. The three fields below name
+// the last three; all false with no children means it genuinely has none.
 type TreeNode struct {
 	// Session is the summary the parent's listing carried. Zero for the root,
 	// which no listing describes.
@@ -72,13 +89,23 @@ type TreeNode struct {
 	// Depth is how far below the root this node sits. Zero for the root.
 	Depth int
 
-	// Children are the nodes below this one, empty at the depth cap.
+	// Children are the nodes below this one.
 	Children []*TreeNode
 
-	// Truncated reports that this node has children the walk did not descend
-	// into, because it reached the depth cap. Without it a caller cannot tell a
-	// leaf from a boundary.
+	// Truncated reports that this node has children the walk did not fetch,
+	// because it reached [TreeOptions.MaxDepth] or the node ceiling. Raise the
+	// bound and walk again to see them.
 	Truncated bool
+
+	// Repeated reports that this session already appears between here and the
+	// root, so the walk stopped rather than following a cycle. Its children are
+	// whatever they are at the shallower position.
+	Repeated bool
+
+	// Err is this node's own listing failure, so a caller can tell a subtree that
+	// is empty from one that could not be read. The walk continues past it, and
+	// [Sessions.ChildrenTree] also returns the first such error.
+	Err error
 }
 
 // ChildrenTree walks a session's subtree, bounded.
@@ -102,11 +129,12 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 	opts = opts.withDefaults()
 
 	root := &TreeNode{ID: sessionID}
-	seen := map[string]bool{sessionID: true}
-	var mu sync.Mutex
 	tokens := make(chan struct{}, opts.Concurrency)
 
+	var mu sync.Mutex
 	var firstErr error
+	visited := 1
+
 	// recordErr keeps the first failure and drops the rest: a walk that fails in
 	// four places has one cause worth reporting and three symptoms.
 	recordErr := func(err error) {
@@ -117,73 +145,83 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 		}
 	}
 
-	var walk func(node *TreeNode)
-	var wg sync.WaitGroup
-
-	walk = func(node *TreeNode) {
-		defer wg.Done()
-
-		if node.Depth >= opts.MaxDepth {
-			// Ask whether children exist without descending, so Truncated is an
-			// answer rather than a guess. Under the same token as a descending
-			// listing: this is the widest level of the walk, so leaving it
-			// unbounded would put more requests in flight than every other level
-			// combined, whatever Concurrency says.
-			tokens <- struct{}{}
-			for _, err := range s.Children(ctx, node.ID) {
-				<-tokens
-				if err != nil {
-					recordErr(err)
-					return
-				}
-				node.Truncated = true
-				return
-			}
-			<-tokens
-			return
+	// admit reserves a slot under the node ceiling. It is the only shared counter
+	// the walk keeps, because a per-path visited set cannot bound total work.
+	admit := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if visited >= opts.MaxNodes {
+			return false
 		}
+		visited++
+		return true
+	}
 
+	// listChildren drains one node's listing, holding a token for the whole walk
+	// of it. The depth-cap probe holds one too: that level has more requests than
+	// every other combined, so leaving it unbounded would make Concurrency a
+	// number that describes nothing.
+	listChildren := func(node *TreeNode) ([]ChildSessionSummary, error) {
 		tokens <- struct{}{}
+		defer func() { <-tokens }()
+
 		var children []ChildSessionSummary
-		var listErr error
 		for child, err := range s.Children(ctx, node.ID) {
 			if err != nil {
-				listErr = err
-				break
+				return nil, err
 			}
 			children = append(children, child)
 		}
-		<-tokens
+		return children, nil
+	}
 
-		if listErr != nil {
-			recordErr(listErr)
+	var wg sync.WaitGroup
+	var walk func(node *TreeNode, ancestors map[string]bool)
+
+	walk = func(node *TreeNode, ancestors map[string]bool) {
+		defer wg.Done()
+
+		children, err := listChildren(node)
+		if err != nil {
+			// On the node, so a caller can tell an unreadable subtree from an empty
+			// one, and on the walk, so one call site sees that something failed.
+			node.Err = err
+			recordErr(err)
+			return
+		}
+		if node.Depth >= opts.MaxDepth {
+			node.Truncated = len(children) > 0
 			return
 		}
 
+		// One set per path, copied on descent. A path cannot race with itself, so
+		// which node owns a shared subtree no longer depends on which HTTP response
+		// lands first. The cost is that a session reachable two ways is expanded
+		// twice, which MaxNodes bounds.
 		for _, child := range children {
-			mu.Lock()
-			repeat := seen[child.ID]
-			if !repeat {
-				seen[child.ID] = true
-			}
-			mu.Unlock()
-			if repeat {
-				// A cycle, or the same session reachable two ways. Record it as a
-				// leaf rather than following it again.
-				node.Children = append(node.Children, &TreeNode{
-					Session: child, ID: child.ID, Depth: node.Depth + 1, Truncated: true,
-				})
-				continue
-			}
 			next := &TreeNode{Session: child, ID: child.ID, Depth: node.Depth + 1}
 			node.Children = append(node.Children, next)
-			wg.Add(1)
-			go walk(next)
+
+			switch {
+			case ancestors[child.ID]:
+				next.Repeated = true
+			case !admit():
+				next.Truncated = true
+			default:
+				descend := make(map[string]bool, len(ancestors)+1)
+				for id := range ancestors {
+					descend[id] = true
+				}
+				descend[child.ID] = true
+
+				wg.Add(1)
+				go walk(next, descend)
+			}
 		}
 	}
 
 	wg.Add(1)
-	walk(root)
+	walk(root, map[string]bool{sessionID: true})
 	wg.Wait()
 
 	return root, firstErr
@@ -195,9 +233,13 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 // It does not read the named session's own state: no listing describes it, so
 // there is no summary to read. Use [Sessions.Get] for that.
 //
-// complete is false when the walk stopped at its depth cap, which makes a false
-// busy inconclusive rather than wrong — there may be work below the cap. A true
-// busy is sound either way, so complete is true whenever busy is.
+// complete is false when the walk did not see the whole subtree — it stopped at
+// [TreeOptions.MaxDepth] or the node ceiling, or a listing failed. That makes a
+// false busy inconclusive rather than wrong. A true busy is sound either way, so
+// complete is true whenever busy is.
+//
+// A cycle does not make the answer incomplete: a repeated session's subtree was
+// already walked where it first appeared.
 //
 // Truncation is deliberately not an error. It is a property of the answer, and the
 // caller decides what to do about it: raise [TreeOptions.MaxDepth] and ask again,
@@ -220,11 +262,14 @@ func (s *Sessions) SubtreeBusy(ctx context.Context, sessionID string, opts TreeO
 		return false, false, err
 	}
 
-	truncated := false
+	// Three of the four reasons a node has no children leave the answer sound. A
+	// Repeated node's subtree was already walked at its shallower position, so
+	// nothing below it is unseen. Truncated and Err are the two that hide work.
+	incomplete := false
 	var visit func(*TreeNode)
 	visit = func(node *TreeNode) {
-		if node.Truncated {
-			truncated = true
+		if node.Truncated || node.Err != nil {
+			incomplete = true
 		}
 		// Depth 0 is the named session, which no listing describes, so there is no
 		// summary to read. A caller asking about that session's own turn wants
@@ -242,5 +287,5 @@ func (s *Sessions) SubtreeBusy(ctx context.Context, sessionID string, opts TreeO
 	if busy {
 		return true, true, err
 	}
-	return false, !truncated, err
+	return false, !incomplete, err
 }

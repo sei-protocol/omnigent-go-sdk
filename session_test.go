@@ -467,3 +467,94 @@ func TestChildrenTreeBoundsEveryLevel(t *testing.T) {
 		t.Errorf("peak %d concurrent listings against a bound of 4", got)
 	}
 }
+
+// TestSubtreeBusyIsAFunctionOfServerStateNotResponseOrder pins the property a
+// shared visited set broke.
+//
+// The fixture is asymmetric on purpose: "shared" is reachable at depth 1 through
+// "near" and at depth 2 through "far". With one visited set, whichever goroutine
+// won the race claimed it, and the claiming node's depth then decided whether the
+// busy leaf below it fell inside MaxDepth. Same server state, different answer,
+// chosen by which HTTP response landed first.
+func TestSubtreeBusyIsAFunctionOfServerStateNotResponseOrder(t *testing.T) {
+	t.Parallel()
+
+	// root -> near -> shared -> leaf(busy)      (leaf at depth 3)
+	// root -> mid  -> far -> shared -> leaf     (leaf at depth 4, past MaxDepth 3)
+	//
+	// Whichever path claims "shared" first, the walk must still find the busy leaf
+	// through the shallow one.
+	for _, slow := range []string{"near", "mid"} {
+		t.Run("slow_"+slow, func(t *testing.T) {
+			t.Parallel()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
+				id := strings.Split(strings.Trim(r.URL.Path, "/"), "/")[2]
+				if id == slow {
+					time.Sleep(60 * time.Millisecond)
+				}
+				page := Page[ChildSessionSummary]{Data: []ChildSessionSummary{}}
+				switch id {
+				case "root":
+					page.Data = []ChildSessionSummary{{ID: "near"}, {ID: "mid"}}
+				case "near":
+					page.Data = []ChildSessionSummary{{ID: "shared"}}
+				case "mid":
+					page.Data = []ChildSessionSummary{{ID: "far"}}
+				case "far":
+					page.Data = []ChildSessionSummary{{ID: "shared"}}
+				case "shared":
+					page.Data = []ChildSessionSummary{{ID: "leaf", Busy: Ptr(true)}}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(page)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			busy, _, err := client.Sessions().SubtreeBusy(
+				context.Background(), "root", TreeOptions{MaxDepth: 3})
+			if err != nil {
+				t.Fatalf("SubtreeBusy: %v", err)
+			}
+			if !busy {
+				t.Error("busy = false; the busy leaf is reachable at depth 3 through near->shared, " +
+					"so the answer must not depend on which parent claimed shared")
+			}
+		})
+	}
+}
+
+// TestChildrenTreeNamesWhyANodeHasNoChildren pins the three reasons apart.
+func TestChildrenTreeNamesWhyANodeHasNoChildren(t *testing.T) {
+	t.Parallel()
+
+	client, _ := treeServer(t, map[string][]childPage{
+		"root":  {{ids: []string{"cap", "cycle"}}},
+		"cap":   {{ids: []string{"below_cap"}}},
+		"cycle": {{ids: []string{"root"}}},
+	})
+
+	root, err := client.Sessions().ChildrenTree(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	if err != nil {
+		t.Fatalf("ChildrenTree: %v", err)
+	}
+	byID := map[string]*TreeNode{}
+	for _, c := range root.Children {
+		byID[c.ID] = c
+	}
+	if node := byID["cap"]; node == nil || !node.Truncated || node.Repeated {
+		t.Errorf("the depth-capped node reports Truncated=%v Repeated=%v, want true/false",
+			node != nil && node.Truncated, node != nil && node.Repeated)
+	}
+	// "cycle" is at the cap too, so its own child is never fetched — the cap wins
+	// over the cycle because the walk stops before it looks.
+	if node := byID["cycle"]; node == nil || !node.Truncated {
+		t.Errorf("the second node at the cap does not report Truncated")
+	}
+}
