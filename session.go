@@ -128,7 +128,17 @@ func (s *Sessions) Children(ctx context.Context, sessionID string) iter.Seq2[Chi
 	if sessionID == "" {
 		return errSeq[ChildSessionSummary](fmt.Errorf("list child sessions: %w: sessionID is required", ErrInvalidArgument))
 	}
-	return pageSeq(ctx, func(ctx context.Context, cursor string) (*Page[ChildSessionSummary], error) {
+	return pageSeq(ctx, s.childPages(sessionID))
+}
+
+// childPages fetches one page of a session's children.
+//
+// Separate from [Sessions.Children] so a caller can wrap each request rather
+// than the whole listing. [Sessions.ChildrenTree] does: bounding listings lets a
+// node that pages many times hold a slot for its entire drain, and every other
+// branch waits behind it.
+func (s *Sessions) childPages(sessionID string) func(context.Context, string) (*Page[ChildSessionSummary], error) {
+	return func(ctx context.Context, cursor string) (*Page[ChildSessionSummary], error) {
 		query := url.Values{}
 		if cursor != "" {
 			query.Set("after", cursor)
@@ -139,7 +149,7 @@ func (s *Sessions) Children(ctx context.Context, sessionID string) iter.Seq2[Chi
 			return nil, err
 		}
 		return &page, nil
-	})
+	}
 }
 
 // ListAgents walks the registered agents.
@@ -341,20 +351,29 @@ func (s *Sessions) ResolveAgent(ctx context.Context, agentName string) (*AgentOb
 		return nil, fmt.Errorf("resolve agent: %w: agentName is required", ErrInvalidArgument)
 	}
 
-	const maxNamesInError = 50
-	var seen []string
-	truncated := false
+	const (
+		maxNamesInError = 20
+		maxNamesRunes   = 400
+	)
+	var (
+		seen      []string
+		seenRunes int
+		truncated bool
+	)
 
 	for agent, err := range s.ListAgents(ctx, ListAgentsOptions{Limit: 1000}) {
 		if err != nil {
-			return nil, fmt.Errorf("resolve agent %q: %w", agentName, err)
+			return nil, fmt.Errorf("resolve agent %q: %w",
+				sanitizeForError(agentName, maxAgentNameRunes), err)
 		}
 		if agent.Name == agentName {
 			found := agent
 			return &found, nil
 		}
-		if len(seen) < maxNamesInError {
-			seen = append(seen, agent.Name)
+		name := sanitizeForError(agent.Name, maxAgentNameRunes)
+		if len(seen) < maxNamesInError && seenRunes+len(name) <= maxNamesRunes {
+			seen = append(seen, name)
+			seenRunes += len(name)
 		} else {
 			truncated = true
 		}
@@ -368,7 +387,7 @@ func (s *Sessions) ResolveAgent(ctx context.Context, agentName string) (*AgentOb
 		listed = "none"
 	}
 	return nil, fmt.Errorf("resolve agent %q: %w: registered agents are %s",
-		agentName, ErrNotFound, listed)
+		sanitizeForError(agentName, maxAgentNameRunes), ErrNotFound, listed)
 }
 
 // ResolveOnlineRunnerOptions narrows which runner will do.

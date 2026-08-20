@@ -46,7 +46,9 @@ type TreeOptions struct {
 	// deep tree is a request storm the caller did not ask for.
 	MaxDepth int
 
-	// Concurrency caps how many child listings run at once. Zero means four.
+	// Concurrency caps how many child-listing requests are in flight at once.
+	// Requests rather than listings, so one node paging many times cannot hold a
+	// slot for its whole drain. Zero means four.
 	Concurrency int
 
 	// MaxNodes caps how many sessions the walk will visit. Zero means one
@@ -112,10 +114,12 @@ type TreeNode struct {
 //
 // Three bounds, each for a failure this walk would otherwise hit. Depth, because
 // a caller cannot know a server-shaped tree's depth in advance. Concurrency,
-// because one listing per child at every level is a request storm. And a visited
+// because one listing per child at every level is a request storm — it caps the
+// requests in flight, so one node's paging does not hold a slot. And a per-path
 // set, because a tree that carries a cycle would otherwise never end — the walk
-// visits each session once and records the repeat as a non-descent rather than
-// following it.
+// descends into a session once per path and records the repeat as a non-descent
+// rather than following it. A session reachable two ways appears twice, which is
+// what the tree says; MaxNodes bounds that expansion.
 //
 // Every child pages. A parent with more children than one page holds still
 // reports all of them, which is where upstream's own walk stops short.
@@ -157,16 +161,12 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 		return true
 	}
 
-	// listChildren drains one node's listing, holding a token for the whole walk
-	// of it. The depth-cap probe holds one too: that level has more requests than
-	// every other combined, so leaving it unbounded would make Concurrency a
-	// number that describes nothing.
+	// listChildren drains one node's listing. Every request in it passes the gate,
+	// including the depth-cap probe: that level has more requests than every other
+	// combined, so leaving it ungated would make Concurrency describe nothing.
 	listChildren := func(node *TreeNode) ([]ChildSessionSummary, error) {
-		tokens <- struct{}{}
-		defer func() { <-tokens }()
-
 		var children []ChildSessionSummary
-		for child, err := range s.Children(ctx, node.ID) {
+		for child, err := range pageSeq(ctx, gateFetch(tokens, s.childPages(node.ID))) {
 			if err != nil {
 				return nil, err
 			}

@@ -14,16 +14,29 @@ import (
 	"time"
 )
 
-// TestUploadDoesNotHoldTheFileInMemory pins the reason Upload takes a reader.
+// TestUploadStreamsTheBodyRatherThanBuffering pins the reason Upload takes a
+// reader.
 //
 // A path-taking upload reads the file; a body built in memory holds it. This one
 // streams through a pipe, so the request holds one buffer whatever the size.
-func TestUploadDoesNotHoldTheFileInMemory(t *testing.T) {
+//
+// Proved by rendezvous rather than by measuring the heap. The heap is a
+// process-wide number, so a test that reads it returns a verdict on whatever else
+// the suite is running at the time. Here the reader refuses to produce its second
+// chunk until the server has read part of the first: an implementation that
+// buffered the whole body before sending would have to drain the reader first, so
+// the two would wait on each other and the upload would never finish.
+func TestUploadStreamsTheBodyRatherThanBuffering(t *testing.T) {
 	t.Parallel()
 
-	const size = 32 << 20 // larger than any buffer this package should allocate
+	const (
+		chunk  = 64 << 10
+		chunks = 32
+	)
 
+	served := make(chan struct{})
 	var received int64
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		part, err := r.MultipartReader()
 		if err != nil {
@@ -34,6 +47,13 @@ func TestUploadDoesNotHoldTheFileInMemory(t *testing.T) {
 			p, err := part.NextPart()
 			if err != nil {
 				break
+			}
+			// Signal on the first byte of body that arrives, which is what releases
+			// the reader below.
+			buf := make([]byte, 1)
+			if n, err := io.ReadFull(p, buf); n > 0 && err == nil {
+				received += int64(n)
+				close(served)
 			}
 			n, _ := io.Copy(io.Discard, p)
 			received += n
@@ -47,26 +67,64 @@ func TestUploadDoesNotHoldTheFileInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	defer func() { _ = client.Close() }()
 
-	before := heapInUse()
-	file, err := client.Files().ForSession("conv_1").Upload(
-		context.Background(), "big.bin", io.LimitReader(zeroes{}, size))
+	// A deadline, so a buffering implementation fails here instead of hanging.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	body := &rendezvousReader{t: t, chunk: chunk, remaining: chunk * chunks, released: served}
+	file, err := client.Files().ForSession("conv_1").Upload(ctx, "big.bin", body)
 	if err != nil {
-		t.Fatalf("Upload: %v", err)
+		t.Fatalf("Upload: %v — the body was not streamed", err)
 	}
-	growth := heapInUse() - before
 
-	if received != size {
-		t.Errorf("server received %d bytes, want %d", received, size)
+	if want := int64(chunk * chunks); received != want {
+		t.Errorf("server received %d bytes, want %d", received, want)
 	}
 	if file.ID != "file_1" {
 		t.Errorf("file.ID = %q, want file_1", file.ID)
 	}
-	// Generous, because a test cannot control the collector. The point is that
-	// growth does not track the payload.
-	if growth > size/4 {
-		t.Errorf("heap grew %d bytes uploading %d; the body is being buffered", growth, size)
+	if !body.waited {
+		t.Error("the reader never had to wait, so the rendezvous proved nothing")
 	}
+}
+
+// rendezvousReader yields the first chunk, then blocks until the server reports
+// that it has read part of it. A buffering implementation deadlocks on that wait.
+//
+// remaining counts bytes, not calls: io.Copy chooses the buffer size, so a
+// per-call count delivers whatever multiple of that size the copy happens to use.
+type rendezvousReader struct {
+	t         *testing.T
+	chunk     int
+	remaining int
+	released  <-chan struct{}
+	sent      int
+	waited    bool
+}
+
+func (r *rendezvousReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	// After the first chunk, not before it: the server cannot have read anything
+	// until something was written, so waiting first would deadlock either way and
+	// prove nothing about buffering.
+	if r.sent > 0 && !r.waited {
+		select {
+		case <-r.released:
+		case <-time.After(10 * time.Second):
+			r.t.Error("the server read nothing while the body was still being written")
+			return 0, io.ErrUnexpectedEOF
+		}
+		r.waited = true
+	}
+	n := min(len(p), r.chunk, r.remaining)
+	clear(p[:n])
+	r.remaining -= n
+	r.sent += n
+	return n, nil
 }
 
 // TestUploadSurfacesAReadFailureRatherThanHanging pins the pipe's close contract.
@@ -128,10 +186,6 @@ func TestFilesRequireASession(t *testing.T) {
 }
 
 // zeroes is an endless reader, so a test can name a size without holding it.
-type zeroes struct{}
-
-func (zeroes) Read(p []byte) (int, error) { return len(p), nil }
-
 // failingReader fails after one chunk, which is the interesting case: the body
 // has already started, so the request is in flight.
 type failingReader struct{}
@@ -142,12 +196,6 @@ func (failingReader) Read(p []byte) (int, error) {
 
 // heapInUse reports live heap bytes after a collection, so a growth measurement
 // is about retention rather than garbage.
-func heapInUse() int64 {
-	runtime.GC()
-	var stats runtime.MemStats
-	runtime.ReadMemStats(&stats)
-	return int64(stats.HeapInuse)
-}
 
 // TestSessionFileKeepsTheBodyItDecodedFrom pins the escape hatch on the one
 // surface with no schema.

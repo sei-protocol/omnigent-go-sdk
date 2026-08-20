@@ -365,3 +365,28 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 		}
 	}
 }
+
+// gateFetch bounds the requests a paged listing issues, not the listing itself.
+//
+// The token is held for one fetch and released before the next. Holding it across
+// a whole drain makes a concurrency bound describe listings, and a listing that
+// pages many times then keeps a slot the rest of the work needs: a branch whose
+// levels are sequential round trips waits for an unrelated listing to finish
+// before it issues its first request.
+//
+// Acquisition honours ctx, so a cancelled walk stops waiting for a slot rather
+// than for the walk to drain.
+func gateFetch[T any](
+	tokens chan struct{},
+	fetch func(context.Context, string) (*Page[T], error),
+) func(context.Context, string) (*Page[T], error) {
+	return func(ctx context.Context, cursor string) (*Page[T], error) {
+		select {
+		case tokens <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		defer func() { <-tokens }()
+		return fetch(ctx, cursor)
+	}
+}

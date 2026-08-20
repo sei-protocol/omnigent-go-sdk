@@ -173,6 +173,10 @@ func (s *SessionFiles) Upload(ctx context.Context, filename string, content io.R
 	if filename == "" {
 		return nil, fmt.Errorf("upload session file: %w: filename is required", ErrInvalidArgument)
 	}
+	if bad, ok := headerUnsafeRune(filename); ok {
+		return nil, fmt.Errorf("upload session file: %w: filename contains %q, which would forge a "+
+			"multipart header", ErrInvalidArgument, bad)
+	}
 	if content == nil {
 		return nil, fmt.Errorf("upload session file: %w: content is nil", ErrInvalidArgument)
 	}
@@ -222,4 +226,22 @@ func (s *SessionFiles) Download(ctx context.Context, fileID string, w io.Writer,
 		return 0, fmt.Errorf("download session file: %w: maxBytes must be positive", ErrInvalidArgument)
 	}
 	return s.client.doDownload(ctx, append(s.segments(), fileID, "content"), w, maxBytes)
+}
+
+// headerUnsafeRune reports the first rune in s that cannot appear in a MIME
+// header value, and whether there was one.
+//
+// mime/multipart escapes a quote and a backslash in a filename and nothing else,
+// so a CR or an LF passes through and ends the Content-Disposition line. What
+// follows it is read as another header, or as another part. Callers derive a
+// filename from a model or a user, so this is reachable input, and the check is
+// a rejection rather than a rewrite: a name the caller did not choose is not the
+// name they meant to upload under.
+func headerUnsafeRune(s string) (rune, bool) {
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == 0 {
+			return r, true
+		}
+	}
+	return 0, false
 }
