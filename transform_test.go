@@ -232,14 +232,13 @@ func TestMergeTextAcrossIterationsMarksCodeBlocks(t *testing.T) {
 
 // TestMergeTextNeedsTheEndsFoldedFirst pins the composition its doc now names.
 //
-// The transform flushes at every ResponseEndBlock, so a sequence carrying one end
-// per tool-loop iteration yields one answer per iteration. The earlier test for this
-// used a fixture with a single end — the shape a stream has only after
-// SkipIntermediateEnds has run — so it could not see the difference.
-func TestMergeTextNeedsTheEndsFoldedFirst(t *testing.T) {
+// The transform flushes at every ResponseEndBlock, so a sequence carrying several —
+// a stream read across more than one turn — yields one answer per end. Composing
+// SkipIntermediateEnds first joins them into one.
+func TestMergeTextJoinsAcrossEndsOnlyWhenTheyAreFolded(t *testing.T) {
 	t.Parallel()
 
-	twoIterations := func() iter.Seq2[Block, error] {
+	twoTurns := func() iter.Seq2[Block, error] {
 		return blockSeq(
 			TextDone{FullText: "one "},
 			ResponseEndBlock{Status: "completed"},
@@ -249,7 +248,7 @@ func TestMergeTextNeedsTheEndsFoldedFirst(t *testing.T) {
 		)
 	}
 
-	alone, _ := collectBlocks(t, MergeTextAcrossIterations()(twoIterations()))
+	alone, _ := collectBlocks(t, MergeTextAcrossIterations()(twoTurns()))
 	var answers []string
 	for _, b := range alone {
 		if done, ok := b.(TextDone); ok {
@@ -257,10 +256,10 @@ func TestMergeTextNeedsTheEndsFoldedFirst(t *testing.T) {
 		}
 	}
 	if len(answers) != 2 {
-		t.Errorf("alone: got %d answers %v, want one per iteration", len(answers), answers)
+		t.Errorf("alone: got %d answers %v, want one per end", len(answers), answers)
 	}
 
-	composed, _ := collectBlocks(t, Pipe(twoIterations(),
+	composed, _ := collectBlocks(t, Pipe(twoTurns(),
 		SkipIntermediateEnds(), MergeTextAcrossIterations()))
 	answers = nil
 	for _, b := range composed {
