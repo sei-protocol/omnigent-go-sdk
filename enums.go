@@ -1,11 +1,12 @@
 package omnigent
 
 // Values the description declares for the enumerated fields on this package's
-// types. The fields stay plain strings, because the server may add a value and a
-// client built against an older description has to keep decoding one it does not
-// know. These name the values it does know.
+// types.
 //
-// TestEveryDeclaredEnumValueHasAConstant holds this file to the description.
+// The fields stay plain strings, so a value this build has never seen still
+// decodes. A switch over these constants therefore needs a default arm. doc.go
+// says the same under "Enumerated values".
+
 // The values ElicitationRequestParams.Mode carries.
 //
 // MCP-standard discriminator. "form" collects structured input via
@@ -27,9 +28,8 @@ const (
 
 // The values ErrorEvent.Source carries.
 //
-// Origin of the error — "llm" for LLM-call failures, "execution" for
-// timeouts, "tool" for tool failures (currently emitted by retry
-// exhaustion paths).
+// Origin of the error — "llm" for LLM-call failures, "execution" for timeouts,
+// "tool" for tool failures (currently emitted by retry exhaustion paths).
 const (
 	ErrorEventSourceLLM       = "llm"
 	ErrorEventSourceExecution = "execution"
@@ -66,9 +66,9 @@ const (
 
 // The values RoutingDecisionData.Scope carries.
 //
-// What the decision governs — "session" (auto-harness session routing),
-// "turn" (per-turn routing), "child_session" (an Omnigent-spawned sub-
-// agent) or "native_subagent" (a Task / spawn_agent spawn routed inside
+// What the decision governs — "session" (auto-harness session routing), "turn"
+// (per-turn routing), "child_session" (an Omnigent-spawned sub-agent) or
+// "native_subagent" (a Task / spawn_agent spawn routed inside the harness).
 const (
 	RoutingDecisionDataScopeSession        = "session"
 	RoutingDecisionDataScopeTurn           = "turn"
@@ -78,9 +78,7 @@ const (
 
 // The values SandboxStatus.Stage carries.
 //
-// Current launch stage, e.g. "provisioning" — one of SandboxLaunchStage,
-// in pipeline order: provisioning (creating the sandbox) → cloning
-// (cloning the repository workspace; skipped when the session has none) →
+// Current launch stage, e.g.
 const (
 	SandboxStatusStageProvisioning = "provisioning"
 	SandboxStatusStageCloning      = "cloning"
@@ -102,9 +100,9 @@ const (
 
 // The values SessionResponse.Status carries.
 //
-// Session lifecycle status. One of "idle" (no loop running), "running"
-// (loop executing), "waiting" (loop parked on background work / sub-
-// agents), or "failed" (terminal failure). Current read paths collapse
+// Session lifecycle status. One of "idle" (no loop running), "running" (loop
+// executing), "waiting" (loop parked on background work / sub-agents), or
+// "failed" (terminal failure).
 const (
 	SessionResponseStatusIdle    = "idle"
 	SessionResponseStatusRunning = "running"
@@ -114,8 +112,8 @@ const (
 
 // The values SessionSandboxStatusEvent.Stage carries.
 //
-// The launch stage just entered, e.g. "provisioning" — see SandboxStatus
-// for the full pipeline order.
+// The launch stage just entered, e.g. "provisioning" — see SandboxStatus for
+// the full pipeline order.
 const (
 	SessionSandboxStatusEventStageProvisioning = "provisioning"
 	SessionSandboxStatusEventStageCloning      = "cloning"
@@ -127,9 +125,7 @@ const (
 
 // The values SessionStatusEvent.Status carries.
 //
-// New session status. "launching" (session or child task created, but no
-// concrete harness start observed), "idle" (no loop running), "running"
-// (loop executing), "waiting" (parent turn parked on the async-work
+// New session status.
 const (
 	SessionStatusEventStatusIdle      = "idle"
 	SessionStatusEventStatusLaunching = "launching"
@@ -140,9 +136,9 @@ const (
 
 // The values SlashCommandData.Kind carries.
 //
-// "skill" for plugin/Skill invocations, "command" for surfaced CLI built-
-// ins (/effort, /clear, /compact, /model, /ultrareview). The web renderer
-// uses this to pick the prefix label and icon. Defaults to "skill" so
+// "skill" for plugin/Skill invocations, "command" for surfaced CLI built-ins
+// (/effort, /clear, /compact, /model, /ultrareview). The web renderer uses
+// this to pick the prefix label and icon.
 const (
 	SlashCommandDataKindSkill   = "skill"
 	SlashCommandDataKindCommand = "command"

@@ -1,5 +1,7 @@
 package omnigent
 
+import "encoding/json"
+
 // AgentObject is the API representation of a registered agent.
 type AgentObject struct {
 	// Whether this is a server-seeded built-in agent (deterministic, name-derived id) as
@@ -33,7 +35,7 @@ type AgentObject struct {
 	// Human-readable agent name, e.g. "research-agent".
 	Name string `json:"name"`
 
-	// Fixed resource type, always "agent".
+	// Resource type, "agent" when present.
 	Object *string `json:"object,omitempty"`
 
 	// Guardrails policies declared on the agent. Each entry summarises the policy name, type,
@@ -100,12 +102,13 @@ type ChildSessionSummary struct {
 	// Child conversation/session identifier, e.g. "conv_child123".
 	ID string `json:"id"`
 
-	// Conversation kind discriminator, always "sub_agent" for rows surfaced by this endpoint.
+	// Conversation kind discriminator, "sub_agent" for rows surfaced by this endpoint.
+	// nil when the server omits it.
 	Kind *string `json:"kind,omitempty"`
 
 	// Session-scoped guardrails labels on the child conversation (mirrors
 	// ConversationObject.labels).
-	Labels map[string]any `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// Single-line preview of the most recent message item in the child's conversation,
 	// truncated to ~150 chars with a trailing ellipsis when longer. nil when the child has no
@@ -116,9 +119,9 @@ type ChildSessionSummary struct {
 	// "required_terminal_exited", "message": "..."}. null when the child has no durable
 	// failure detail. This is the typed projection of runner-owned failure labels; clients
 	// should not parse those labels directly.
-	LastTaskError map[string]any `json:"last_task_error,omitempty"`
+	LastTaskError map[string]string `json:"last_task_error,omitempty"`
 
-	// Fixed resource type, always "child_session".
+	// Resource type, "child_session" when present.
 	Object *string `json:"object,omitempty"`
 
 	// Parent conversation id (echo of the route's session_id path parameter), e.g.
@@ -183,13 +186,13 @@ type CompactionData struct {
 
 // ConversationDeleted is the confirmation payload returned after deleting a conversation.
 type ConversationDeleted struct {
-	// Always true.
+	// true on success. nil when the server omits the field.
 	Deleted *bool `json:"deleted,omitempty"`
 
 	// ID of the deleted conversation, e.g. "conv_abc123".
 	ID string `json:"id"`
 
-	// Fixed resource type, always "conversation.deleted".
+	// Resource type, "conversation.deleted" when present.
 	Object *string `json:"object,omitempty"`
 }
 
@@ -202,8 +205,14 @@ type ConversationItem struct {
 	// and single-user mode. Lets owner and collaborator messages be distinguished.
 	CreatedBy *string `json:"created_by,omitempty"`
 
-	// The typed data payload (MessageData, etc.).
-	Data any `json:"data"`
+	// Payload for this item, left undecoded because the description declares
+	// eleven variants for it and no discriminator to choose between them.
+	//
+	// Switch on Type, then unmarshal into the matching variant:
+	// [MessageData], [FunctionCallData], [FunctionCallOutputData], [ErrorData],
+	// [ReasoningData], [CompactionData], [NativeToolData], [SlashCommandData],
+	// [TerminalCommandData], [ResourceEventData] or [RoutingDecisionData].
+	Data json.RawMessage `json:"data"`
 
 	// Store-assigned item ID, e.g. "msg_abc123".
 	ID string `json:"id"`
@@ -266,7 +275,7 @@ type MCPServerSummary struct {
 
 	// HTTP headers for transport="http" servers. Values are always "[REDACTED]"; only the key
 	// names are exposed.
-	Headers map[string]any `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// Server name as declared in the agent spec, e.g. "github".
 	Name string `json:"name"`
@@ -285,13 +294,13 @@ type MessageData struct {
 	Content []map[string]any `json:"content"`
 
 	// true when an assistant message is a durable partial response from an interrupted
-	// external-native turn, e.g. Codex turn/completed with status "interrupted". Defaults to
-	// false and is omitted from serialized payloads in that case.
+	// external-native turn, e.g. Codex turn/completed with status "interrupted". nil when
+	// false, because the server omits it from the payload in that case.
 	Interrupted *bool `json:"interrupted,omitempty"`
 
 	// true for durable context that must be replayed to agents but hidden from user-facing
-	// transcripts, e.g. injected skill instructions. Defaults to false and is omitted from
-	// serialized payloads in that case.
+	// transcripts, e.g. injected skill instructions. nil when false, because the server
+	// omits it from the payload in that case.
 	IsMeta *bool   `json:"is_meta,omitempty"`
 	Model  *string `json:"model,omitempty"`
 
@@ -324,9 +333,9 @@ type NativeToolData struct {
 
 // PaginatedList is a paginated list response following cursor-based pagination.
 type PaginatedList struct {
-	// Page of results. Items are heterogeneous (ResponseObject, ConversationObject,
-	// FileObject, or dicts) and list is invariant, so no single concrete type satisfies all
-	// callers.
+	// Page of results. Items are heterogeneous and Go has no sum type, so each
+	// element decodes as a map. Switch on the element's "object" key, then
+	// unmarshal into the matching type.
 	Data []map[string]any `json:"data,omitempty"`
 
 	// ID of the first item in the page, or nil if the page is empty, e.g. "resp_abc123".
@@ -338,7 +347,7 @@ type PaginatedList struct {
 	// ID of the last item in the page, or nil if the page is empty, e.g. "resp_xyz789".
 	LastID *string `json:"last_id,omitempty"`
 
-	// Fixed resource type, always "list".
+	// Resource type, "list" when present.
 	Object *string `json:"object,omitempty"`
 }
 
@@ -431,8 +440,8 @@ type RoutingDecisionData struct {
 
 	// What the decision governs — "session" (auto-harness session routing), "turn" (per-turn
 	// routing), "child_session" (an Omnigent-spawned sub-agent) or "native_subagent" (a Task /
-	// spawn_agent spawn routed inside the harness). Defaults to "turn" so rows persisted
-	// before this field deserialize.
+	// spawn_agent spawn routed inside the harness). nil on a row persisted before this
+	// field existed; treat nil as "turn".
 	Scope *string `json:"scope,omitempty"`
 }
 
@@ -528,7 +537,7 @@ type SessionListItem struct {
 	ID string `json:"id"`
 
 	// Session-scoped guardrails labels.
-	Labels map[string]any `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// The user_id of the session owner, or nil when permissions are disabled. Included so the
 	// sidebar can display the owner without a separate API call.
@@ -662,13 +671,13 @@ type SessionResponse struct {
 	Kind  *string            `json:"kind,omitempty"`
 
 	// Session-scoped guardrails labels. Empty dict when no labels have been written.
-	Labels map[string]any `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// Error details from the most recently failed task. Only present when status == "failed"
 	// and the task stored an error. Lets clients display the failure reason on historical load
 	// without relying on the transient response.error SSE event (which may have been emitted
 	// before the web client subscribed).
-	LastTaskError map[string]any `json:"last_task_error,omitempty"`
+	LastTaskError map[string]string `json:"last_task_error,omitempty"`
 
 	// Total token count (input + output) from the most recently completed task's usage, e.g.
 	// 45231. nil when no task has completed yet. Lets clients seed their context-ring on
@@ -678,8 +687,8 @@ type SessionResponse struct {
 	// The LLM model identifier from the bound agent's spec, e.g. "anthropic/claude-
 	// sonnet-4-6". nil when the agent has no explicit llm: block or the agent cannot be
 	// looked up.
-	LlmModel   *string        `json:"llm_model,omitempty"`
-	MCPStartup map[string]any `json:"mcp_startup,omitempty"`
+	LLMModel   *string                     `json:"llm_model,omitempty"`
+	MCPStartup map[string]MCPServerStartup `json:"mcp_startup,omitempty"`
 
 	// Runner-owned model-picker options for native sessions. Claude supplies launch-time
 	// gateway aliases; Codex includes each model's supported reasoning efforts. Empty while
@@ -759,7 +768,7 @@ type SessionResponse struct {
 	// Pass-through CLI args the native terminal wrapper (claude / codex) was launched with,
 	// e.g. ["--dangerously-skip-permissions"]. nil for non-native sessions or a native
 	// session launched with none. Lets the launcher reproduce the command on resume.
-	TerminalLaunchArgs []string `json:"terminal_launch_args,omitempty"`
+	TerminalLaunchArgs []string `json:"terminal_launch_args"`
 
 	// true while the runner is auto-creating a terminal-first session's terminal (claude-
 	// native / codex-native), so the Web UI shows a spinner on the Terminal pill instead of a
@@ -779,7 +788,7 @@ type SessionResponse struct {
 	// unpriced — no turn has been priced yet (the model is absent from the pricing
 	// catalog, or no usage has been recorded) — so clients render "—" rather than a misleading
 	// $0.00.
-	TotalCostUsd *float64 `json:"total_cost_usd,omitempty"`
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 
 	// Unix epoch timestamp of the last persisted session activity. Advances when conversation
 	// items are appended and on session metadata edits (rename, agent switch, archive); a mid-
@@ -791,7 +800,7 @@ type SessionResponse struct {
 	// {"claude-sonnet-4-6": ModelUsage(input_tokens=12000, ...)}. null when no per-model usage
 	// has been recorded (older sessions recorded before this field existed, or before the
 	// first turn).
-	UsageByModel map[string]any `json:"usage_by_model,omitempty"`
+	UsageByModel map[string]ModelUsage `json:"usage_by_model,omitempty"`
 
 	// Absolute path on disk where the runner cd's, e.g. "/Users/corey/universe/src/foo". Set
 	// when the session was bound to a host workspace at create-time, or when the CLI captured
@@ -818,7 +827,7 @@ type SlashCommandData struct {
 
 	// "skill" for plugin/Skill invocations, "command" for surfaced CLI built-ins (/effort,
 	// /clear, /compact, /model, /ultrareview). The web renderer uses this to pick the prefix
-	// label and icon. Defaults to "skill" so persisted items predating this field deserialize
+	// label and icon. nil on an item persisted before this field existed; treat nil as "skill", so persisted items predating this field deserialize
 	// without backfill.
 	Kind  *string `json:"kind,omitempty"`
 	Model string  `json:"model"`
@@ -871,7 +880,7 @@ type UpdateSessionRequest struct {
 
 	// Guardrails labels to upsert. Merges with existing labels; keys not present are left
 	// untouched.
-	Labels map[string]any `json:"labels,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// Per-session LLM model override, e.g. "claude-opus-4-7". The value is forwarded as-is to
 	// the executor at turn start; the server does not enumerate valid models. Clear aliases

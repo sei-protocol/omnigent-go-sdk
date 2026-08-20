@@ -6,8 +6,9 @@
 // policy, the error surface, the 52-variant [Event] union, and [Client.Stream]
 // for reading one session's server-sent events.
 //
-// There is no session, files, turn-loop, transcript-block or tool-dispatch
-// surface. A caller needing those reaches the routes directly.
+// The session, agent and file types are declared. No method reaches those routes
+// yet, and there is no turn-loop, transcript-block or tool-dispatch surface. A
+// caller needing those reaches the routes directly.
 // docs/adr/0001-rebuild-rather-than-reland.md records why.
 //
 // The public API returns iter.Seq2, so building against this package needs Go
@@ -35,16 +36,24 @@
 // the exception: nil already carries that distinction, and a pointer to a slice
 // reads badly at a call site. [Ptr] is how a caller sets one.
 //
+// # Enumerated values
+//
+// enums.go names every value the description declares for an enumerated field.
+// The fields themselves stay plain strings, so a value this build has never seen
+// still decodes rather than failing. A switch over those constants therefore
+// needs a default arm.
+//
 // # Hand-authored types
 //
 // Every type here is written by hand against spec/openapi.json, a pinned snapshot
 // of the server's OpenAPI document and this package's contract of record. No code
 // generator runs, and none is committed.
 //
-// Four tests hold the types to the description. Together they check that every
-// exported field names a property the description declares, that its Go type and
-// optionality match what the description says, and that the decoder's variant set
-// equals the description's own discriminator mapping in both directions.
+// Six tests hold the types to the description, across five dimensions: the
+// mapping is complete in both directions, every exported field names a property
+// the description declares, its Go type and optionality match, a container's
+// declared value or element type matches, every declared enum value has a
+// constant, and the decoder's variant set equals the discriminator mapping.
 //
 // What they do not check is presence: a property the description declares and
 // this package omits passes. That is deliberate, because reaching every route is

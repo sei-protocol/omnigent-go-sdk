@@ -20,7 +20,8 @@ door.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Four conformance tests check every exported type the decoder reaches.
+  declares. Six conformance tests check every exported type, across five
+  dimensions.
   They do not check presence: omitting a property the document declares passes,
   deliberately.
 - Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
