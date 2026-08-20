@@ -6,6 +6,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Sessions reaches the session surface.
@@ -321,4 +322,123 @@ func (s *Sessions) ResolveElicitation(ctx context.Context, sessionID, elicitatio
 	return s.client.doJSON(ctx, http.MethodPost,
 		[]string{"v1", "sessions", sessionID, "elicitations", elicitationID, "resolve"},
 		nil, result, nil)
+}
+
+// ResolveAgent finds a registered agent by the name a person picked.
+//
+// A picker lists names; session creation binds by id. This closes that gap.
+//
+// It follows the listing cursor, so an agent past the first page still resolves.
+// Only server-registered agents are listed, so a session-scoped agent is not
+// resolvable this way.
+//
+// A miss wraps [ErrNotFound], though no 404 was involved: the listing succeeded
+// and carried no such name. The error names some of the names it did see, capped,
+// because a large deployment should not build thousands of them to render one
+// message.
+func (s *Sessions) ResolveAgent(ctx context.Context, agentName string) (*AgentObject, error) {
+	if agentName == "" {
+		return nil, fmt.Errorf("resolve agent: %w: agentName is required", ErrInvalidArgument)
+	}
+
+	const maxNamesInError = 50
+	var seen []string
+	truncated := false
+
+	for agent, err := range s.ListAgents(ctx, ListAgentsOptions{Limit: 1000}) {
+		if err != nil {
+			return nil, fmt.Errorf("resolve agent %q: %w", agentName, err)
+		}
+		if agent.Name == agentName {
+			found := agent
+			return &found, nil
+		}
+		if len(seen) < maxNamesInError {
+			seen = append(seen, agent.Name)
+		} else {
+			truncated = true
+		}
+	}
+
+	listed := strings.Join(seen, ", ")
+	if truncated {
+		listed += ", ..."
+	}
+	if listed == "" {
+		listed = "none"
+	}
+	return nil, fmt.Errorf("resolve agent %q: %w: registered agents are %s",
+		agentName, ErrNotFound, listed)
+}
+
+// ResolveOnlineRunnerOptions narrows which runner will do.
+type ResolveOnlineRunnerOptions struct {
+	// Harness is the harness the session needs, e.g. "openai-agents". Empty
+	// accepts any online runner.
+	Harness string
+
+	// Canonicalize normalises a harness name on both sides of the comparison, so
+	// a spec spelling that is an alias still matches a runner advertising the
+	// canonical name. Nil compares the names as given.
+	//
+	// It is a function rather than a table because the aliases are the server's,
+	// and a table here would be a second copy of them going stale.
+	Canonicalize func(string) string
+}
+
+// ResolveOnlineRunner finds an online runner that can drive a harness.
+//
+// A client with no runner of its own still needs one bound before a turn can
+// dispatch, and the server knows which of its runners are online and what each
+// advertises.
+//
+// Returns an empty id and a nil error when the server has no match. That is a
+// normal state, not a failure: the caller waits or asks for a different harness.
+//
+// A runner that reports no harness list at all is the fallback, taken only when
+// nothing advertises the harness outright. The server matches the same way, and
+// the alternative — treating silence as a refusal — leaves a usable runner idle.
+func (s *Sessions) ResolveOnlineRunner(ctx context.Context, opts ResolveOnlineRunnerOptions) (string, error) {
+	var listing struct {
+		Data []RunnerInfo `json:"data"`
+	}
+	if err := s.client.doJSON(ctx, http.MethodGet,
+		[]string{"v1", "runners"}, nil, nil, &listing); err != nil {
+		return "", fmt.Errorf("resolve online runner: %w", err)
+	}
+
+	wanted := map[string]bool{}
+	if opts.Harness != "" {
+		wanted[opts.Harness] = true
+		if opts.Canonicalize != nil {
+			wanted[opts.Canonicalize(opts.Harness)] = true
+		}
+	}
+
+	var unknownHarness string
+	for _, runner := range listing.Data {
+		if !runner.Online || runner.RunnerID == "" {
+			continue
+		}
+		if runner.Harnesses == nil {
+			// Reported nothing about its harnesses, so it is the fallback rather
+			// than a refusal. First one wins.
+			if unknownHarness == "" {
+				unknownHarness = runner.RunnerID
+			}
+			continue
+		}
+		if len(wanted) == 0 {
+			return runner.RunnerID, nil
+		}
+		for _, advertised := range runner.Harnesses {
+			if wanted[advertised] {
+				return runner.RunnerID, nil
+			}
+			if opts.Canonicalize != nil && wanted[opts.Canonicalize(advertised)] {
+				return runner.RunnerID, nil
+			}
+		}
+	}
+	return unknownHarness, nil
 }

@@ -277,3 +277,21 @@ func (o DeleteSessionOptions) query() url.Values {
 	}
 	return query
 }
+
+// RunnerInfo is one runner the server knows about.
+//
+// Hand-written: GET /v1/runners publishes a map of arrays of untyped objects, so
+// nothing in the description pins these fields. A server-side rename breaks
+// [Sessions.ResolveOnlineRunner] silently.
+type RunnerInfo struct {
+	// RunnerID identifies the runner, e.g. "runner_abc123".
+	RunnerID string `json:"runner_id"`
+
+	// Online reports whether the runner is reachable now.
+	Online bool `json:"online"`
+
+	// Harnesses are the harnesses this runner advertises. Nil when the runner
+	// reported no list, which [Sessions.ResolveOnlineRunner] treats as a fallback
+	// rather than a refusal.
+	Harnesses []string `json:"harnesses"`
+}
