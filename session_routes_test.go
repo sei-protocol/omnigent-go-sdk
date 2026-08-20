@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -62,7 +61,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "create",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.Create(context.Background(), SessionCreateRequest{AgentID: "ag_1"})
+				_, err := s.Create(t.Context(), SessionCreateRequest{AgentID: "ag_1"})
 				return err
 			},
 			wantMethod: http.MethodPost,
@@ -73,7 +72,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "get",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.Get(context.Background(), "conv_1", GetSessionOptions{})
+				_, err := s.Get(t.Context(), "conv_1", GetSessionOptions{})
 				return err
 			},
 			wantMethod: http.MethodGet,
@@ -83,7 +82,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "delete",
 			reply: `{"id":"conv_1","deleted":true}`,
 			call: func(s *Sessions) error {
-				_, err := s.Delete(context.Background(), "conv_1", DeleteSessionOptions{})
+				_, err := s.Delete(t.Context(), "conv_1", DeleteSessionOptions{})
 				return err
 			},
 			wantMethod: http.MethodDelete,
@@ -93,7 +92,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "fork",
 			reply: `{"id":"conv_2"}`,
 			call: func(s *Sessions) error {
-				_, err := s.Fork(context.Background(), "conv_1", SessionForkRequest{})
+				_, err := s.Fork(t.Context(), "conv_1", SessionForkRequest{})
 				return err
 			},
 			wantMethod: http.MethodPost,
@@ -103,7 +102,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "bind runner patches, it does not post",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.BindRunner(context.Background(), "conv_1", "runner_1")
+				_, err := s.BindRunner(t.Context(), "conv_1", "runner_1")
 				return err
 			},
 			wantMethod: http.MethodPatch,
@@ -114,7 +113,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "set archived",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.SetArchived(context.Background(), "conv_1", true)
+				_, err := s.SetArchived(t.Context(), "conv_1", true)
 				return err
 			},
 			wantMethod: http.MethodPatch,
@@ -125,7 +124,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "set external id",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.SetExternalID(context.Background(), "conv_1", "ext_1")
+				_, err := s.SetExternalID(t.Context(), "conv_1", "ext_1")
 				return err
 			},
 			wantMethod: http.MethodPatch,
@@ -136,7 +135,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "set reasoning effort",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.SetReasoningEffort(context.Background(), "conv_1", "high")
+				_, err := s.SetReasoningEffort(t.Context(), "conv_1", "high")
 				return err
 			},
 			wantMethod: http.MethodPatch,
@@ -147,7 +146,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "clear reasoning effort sends the alias",
 			reply: `{"id":"conv_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.ClearReasoningEffort(context.Background(), "conv_1")
+				_, err := s.ClearReasoningEffort(t.Context(), "conv_1")
 				return err
 			},
 			wantMethod: http.MethodPatch,
@@ -158,7 +157,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "send message posts to the events route",
 			reply: `{"queued":true,"item_id":"item_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.SendMessage(context.Background(), "conv_1", "hello")
+				_, err := s.SendMessage(t.Context(), "conv_1", "hello")
 				return err
 			},
 			wantMethod: http.MethodPost,
@@ -168,7 +167,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 		{
 			name:       "interrupt is an input, not its own route",
 			reply:      `{"queued":false}`,
-			call:       func(s *Sessions) error { return s.Interrupt(context.Background(), "conv_1") },
+			call:       func(s *Sessions) error { return s.Interrupt(t.Context(), "conv_1") },
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/sessions/conv_1/events",
 			wantBody:   map[string]any{"type": InputTypeInterrupt},
@@ -176,7 +175,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 		{
 			name:       "compact likewise",
 			reply:      `{"queued":false}`,
-			call:       func(s *Sessions) error { return s.Compact(context.Background(), "conv_1") },
+			call:       func(s *Sessions) error { return s.Compact(t.Context(), "conv_1") },
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/sessions/conv_1/events",
 			wantBody:   map[string]any{"type": InputTypeCompact},
@@ -185,7 +184,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "resolve elicitation posts to the session the caller named",
 			reply: `{}`,
 			call: func(s *Sessions) error {
-				return s.ResolveElicitation(context.Background(), "conv_child", "eli_1", ElicitationResult{})
+				return s.ResolveElicitation(t.Context(), "conv_child", "eli_1", ElicitationResult{})
 			},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/sessions/conv_child/elicitations/eli_1/resolve",
@@ -194,7 +193,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "list agents",
 			reply: `{"data":[],"has_more":false}`,
 			call: func(s *Sessions) error {
-				for _, err := range s.ListAgents(context.Background(), ListAgentsOptions{}) {
+				for _, err := range s.ListAgents(t.Context(), ListAgentsOptions{}) {
 					return err
 				}
 				return nil
@@ -206,7 +205,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "list items",
 			reply: `{"data":[],"has_more":false}`,
 			call: func(s *Sessions) error {
-				for _, err := range s.ListItems(context.Background(), "conv_1", SessionItemsOptions{}) {
+				for _, err := range s.ListItems(t.Context(), "conv_1", SessionItemsOptions{}) {
 					return err
 				}
 				return nil
@@ -218,7 +217,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "session file list",
 			reply: `{"data":[],"has_more":false}`,
 			call: func(s *Sessions) error {
-				for _, err := range s.client.Files().ForSession("conv_1").List(context.Background(), ListFilesOptions{}) {
+				for _, err := range s.client.Files().ForSession("conv_1").List(t.Context(), ListFilesOptions{}) {
 					return err
 				}
 				return nil
@@ -230,7 +229,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "session file get",
 			reply: `{"id":"file_1"}`,
 			call: func(s *Sessions) error {
-				_, err := s.client.Files().ForSession("conv_1").Get(context.Background(), "file_1")
+				_, err := s.client.Files().ForSession("conv_1").Get(t.Context(), "file_1")
 				return err
 			},
 			wantMethod: http.MethodGet,
@@ -240,7 +239,7 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "session file delete",
 			reply: `{}`,
 			call: func(s *Sessions) error {
-				return s.client.Files().ForSession("conv_1").Delete(context.Background(), "file_1")
+				return s.client.Files().ForSession("conv_1").Delete(t.Context(), "file_1")
 			},
 			wantMethod: http.MethodDelete,
 			wantPath:   "/v1/sessions/conv_1/resources/files/file_1",
@@ -290,7 +289,7 @@ func TestResolveAgentFollowsTheCursorAndNamesWhatItSaw(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		agent, err := client.Sessions().ResolveAgent(context.Background(), "beta")
+		agent, err := client.Sessions().ResolveAgent(t.Context(), "beta")
 		if err != nil {
 			t.Fatalf("ResolveAgent: %v", err)
 		}
@@ -302,7 +301,7 @@ func TestResolveAgentFollowsTheCursorAndNamesWhatItSaw(t *testing.T) {
 	t.Run("a miss wraps ErrNotFound and names the alternatives", func(t *testing.T) {
 		t.Parallel()
 		client, _ := routeRecorder(t, `{"data":[{"id":"ag_a","name":"alpha"}],"has_more":false}`)
-		_, err := client.Sessions().ResolveAgent(context.Background(), "absent")
+		_, err := client.Sessions().ResolveAgent(t.Context(), "absent")
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("error = %v, want it to wrap ErrNotFound", err)
 		}
@@ -314,7 +313,7 @@ func TestResolveAgentFollowsTheCursorAndNamesWhatItSaw(t *testing.T) {
 	t.Run("an empty name is rejected before any request", func(t *testing.T) {
 		t.Parallel()
 		client, got := routeRecorder(t, `{}`)
-		if _, err := client.Sessions().ResolveAgent(context.Background(), ""); !errors.Is(err, ErrInvalidArgument) {
+		if _, err := client.Sessions().ResolveAgent(t.Context(), ""); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("error = %v, want ErrInvalidArgument", err)
 		}
 		if got.method != "" {
@@ -353,7 +352,7 @@ func TestResolveOnlineRunnerPrefersAnAdvertisedHarness(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			client, _ := routeRecorder(t, listing)
-			got, err := client.Sessions().ResolveOnlineRunner(context.Background(), tc.opts)
+			got, err := client.Sessions().ResolveOnlineRunner(t.Context(), tc.opts)
 			if err != nil {
 				t.Fatalf("ResolveOnlineRunner: %v", err)
 			}
@@ -366,7 +365,7 @@ func TestResolveOnlineRunnerPrefersAnAdvertisedHarness(t *testing.T) {
 	t.Run("no match is an empty id and no error", func(t *testing.T) {
 		t.Parallel()
 		client, _ := routeRecorder(t, `{"data":[{"runner_id":"a","online":false,"harnesses":["x"]}]}`)
-		got, err := client.Sessions().ResolveOnlineRunner(context.Background(), ResolveOnlineRunnerOptions{Harness: "x"})
+		got, err := client.Sessions().ResolveOnlineRunner(t.Context(), ResolveOnlineRunnerOptions{Harness: "x"})
 		if err != nil {
 			t.Fatalf("ResolveOnlineRunner: %v", err)
 		}
@@ -380,7 +379,7 @@ func TestOfflineRunnerIsNeverChosen(t *testing.T) {
 	t.Parallel()
 
 	client, _ := routeRecorder(t, `{"data":[{"runner_id":"offline_only","online":false,"harnesses":["h"]}]}`)
-	got, err := client.Sessions().ResolveOnlineRunner(context.Background(), ResolveOnlineRunnerOptions{})
+	got, err := client.Sessions().ResolveOnlineRunner(t.Context(), ResolveOnlineRunnerOptions{})
 	if err != nil {
 		t.Fatalf("ResolveOnlineRunner: %v", err)
 	}

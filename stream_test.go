@@ -260,7 +260,7 @@ func TestStreamEvents(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			got, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+			got, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 			if tc.wantErr != nil {
 				if !errors.Is(streamErr, tc.wantErr) {
@@ -314,7 +314,7 @@ func TestStreamSkipsAnUndecodableFrame(t *testing.T) {
 		skipped = append(skipped, frame)
 		return nil
 	}}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", opts))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts))
 
 	if streamErr != nil {
 		t.Fatalf("stream error = %v, want none: one unreadable frame must not end the turn", streamErr)
@@ -372,7 +372,7 @@ func TestStreamSkippedFrameHookCanEndTheStream(t *testing.T) {
 	opts := StreamOptions{OnSkippedFrame: func(ctx context.Context, frame SkippedFrame) error {
 		return refused
 	}}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", opts))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts))
 
 	if !errors.Is(streamErr, refused) {
 		t.Fatalf("stream error = %v, want it to wrap the hook's error", streamErr)
@@ -401,7 +401,7 @@ func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if len(events) != 0 {
 		t.Errorf("events = %v, want none: neither frame was decodable", events)
@@ -448,7 +448,7 @@ func TestStreamRejectedSubscription(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+			events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 			if len(events) != 0 {
 				t.Errorf("got events %v, want none", events)
 			}
@@ -490,7 +490,7 @@ func TestStreamRequestShape(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			if _, streamErr := collect(t, client.Stream(context.Background(), "conv_1", tc.opts)); streamErr != nil {
+			if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", tc.opts)); streamErr != nil {
 				t.Fatalf("stream: %v", streamErr)
 			}
 			got := <-requests
@@ -514,7 +514,7 @@ func TestStreamRequiresASessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, streamErr := collect(t, client.Stream(context.Background(), "", StreamOptions{}))
+	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
 	if streamErr == nil || !strings.Contains(streamErr.Error(), "sessionID is required") {
 		t.Fatalf("stream error = %v, want one naming the missing session id", streamErr)
 	}
@@ -537,7 +537,7 @@ func TestStreamIdleTimeout(t *testing.T) {
 	}
 
 	started := time.Now()
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 	elapsed := time.Since(started)
 
 	if len(events) != 1 || events[0] != "heartbeat" {
@@ -568,7 +568,7 @@ func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	opts := StreamOptions{IdleTimeout: 150 * time.Millisecond}
-	if _, streamErr := collect(t, client.Stream(context.Background(), "conv_1", opts)); !errors.Is(streamErr, ErrStreamIdle) {
+	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts)); !errors.Is(streamErr, ErrStreamIdle) {
 		t.Fatalf("stream error = %v, want it to wrap ErrStreamIdle", streamErr)
 	}
 }
@@ -616,7 +616,7 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if streamErr != nil {
 		t.Fatalf("stream error = %v, want none: a frame still arriving is not a silent transport", streamErr)
@@ -651,7 +651,7 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if len(events) != 0 {
 		t.Errorf("events = %v, want none: the frame never completed", events)
@@ -684,7 +684,7 @@ func TestStreamSurvivesALongToolPauseWithinTheTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 	if streamErr != nil {
 		t.Fatalf("stream error = %v, want none: each frame should rearm the watchdog", streamErr)
 	}
@@ -724,7 +724,7 @@ func TestStreamAbruptConnectionTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 	if len(events) != 1 || events[0] != "heartbeat" {
 		t.Errorf("events = %v, want the frame that did arrive before the teardown", events)
 	}
@@ -749,7 +749,7 @@ func TestStreamCallerCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var (
@@ -808,7 +808,7 @@ func TestStreamBreakingOutEarly(t *testing.T) {
 	}
 
 	seen := 0
-	for range client.Stream(context.Background(), "conv_1", StreamOptions{}) {
+	for range client.Stream(t.Context(), "conv_1", StreamOptions{}) {
 		seen++
 		break
 	}
@@ -838,7 +838,7 @@ func TestStreamSpawnsNoGoroutines(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		for range client.Stream(ctx, "conv_1", StreamOptions{}) {
 			break
 		}
@@ -879,7 +879,7 @@ func settle(t *testing.T) {
 func TestIdleWatchdogIgnoresAnExpiryThatDataBeat(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	watchdog := newIdleWatchdog(time.Hour, cancel)
@@ -908,7 +908,7 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 
 	const timeout = time.Minute
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	var clock atomic.Int64
@@ -949,7 +949,7 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 func TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
 	t.Parallel()
 
-	_, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	watchdog := newIdleWatchdog(time.Hour, cancel)
@@ -994,7 +994,7 @@ func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
 		events    []string
 		streamErr error
 	)
-	for event, err := range client.Stream(context.Background(), "conv_1", StreamOptions{}) {
+	for event, err := range client.Stream(t.Context(), "conv_1", StreamOptions{}) {
 		if err != nil {
 			streamErr = err
 			continue
@@ -1047,7 +1047,7 @@ func TestStreamOnSubscribedRunsExactlyOnce(t *testing.T) {
 		calls++
 		return nil
 	}}
-	for event, err := range client.Stream(context.Background(), "conv_1", opts) {
+	for event, err := range client.Stream(t.Context(), "conv_1", opts) {
 		if err != nil {
 			t.Fatalf("stream error = %v, want none", err)
 		}
@@ -1084,7 +1084,7 @@ func TestStreamOnSubscribedFailureEndsTheStream(t *testing.T) {
 
 	sendFailed := errors.New("send rejected")
 	opts := StreamOptions{OnSubscribed: func(ctx context.Context, sub Subscription) error { return sendFailed }}
-	events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", opts))
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts))
 
 	if len(events) != 0 {
 		t.Errorf("events = %v, want none: the hook failed before the first event", events)
@@ -1101,7 +1101,7 @@ func TestStreamMissingSessionIDIsMatchable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, streamErr := collect(t, client.Stream(context.Background(), "", StreamOptions{}))
+	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
 	if !errors.Is(streamErr, ErrInvalidArgument) {
 		t.Fatalf("stream error = %v, want it to wrap ErrInvalidArgument", streamErr)
 	}
@@ -1172,7 +1172,7 @@ func TestStreamBoundsTheAccumulatedFrameNotJustOneLine(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			events, streamErr := collect(t, client.Stream(context.Background(), "conv_1", StreamOptions{}))
+			events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 			if !errors.Is(streamErr, ErrStreamFrameTooLarge) {
 				t.Fatalf("stream error = %v, want it to wrap ErrStreamFrameTooLarge", streamErr)
@@ -1219,7 +1219,7 @@ func TestStreamOnSubscribedDescribesItsSubscription(t *testing.T) {
 			return nil
 		},
 	}
-	if _, streamErr := collect(t, client.Stream(context.Background(), "conv_9", opts)); streamErr != nil {
+	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_9", opts)); streamErr != nil {
 		t.Fatalf("stream: %v", streamErr)
 	}
 	if got.SessionID != "conv_9" {
@@ -1278,7 +1278,7 @@ func TestUnsentinelledStreamStillNamesATotalDecodeFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var got error
-	for _, err := range client.Stream(context.Background(), "conv_1", StreamOptions{}) {
+	for _, err := range client.Stream(t.Context(), "conv_1", StreamOptions{}) {
 		if err != nil {
 			got = err
 		}

@@ -70,7 +70,7 @@ func TestUploadStreamsTheBodyRatherThanBuffering(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	// A deadline, so a buffering implementation fails here instead of hanging.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 
 	body := &rendezvousReader{t: t, chunk: chunk, remaining: chunk * chunks, released: served}
@@ -146,7 +146,7 @@ func TestUploadSurfacesAReadFailureRatherThanHanging(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	_, err = client.Files().ForSession("conv_1").Upload(
-		context.Background(), "broken.bin", failingReader{})
+		t.Context(), "broken.bin", failingReader{})
 	if err == nil {
 		t.Fatal("Upload = nil error for a reader that fails mid-body")
 	}
@@ -161,7 +161,7 @@ func TestDownloadRequiresABound(t *testing.T) {
 	}
 	var sink bytes.Buffer
 	if _, err := client.Files().ForSession("conv_1").Download(
-		context.Background(), "file_1", &sink, 0); !errors.Is(err, ErrInvalidArgument) {
+		t.Context(), "file_1", &sink, 0); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("error = %v, want ErrInvalidArgument for an absent bound", err)
 	}
 }
@@ -174,13 +174,13 @@ func TestFilesRequireASession(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	files := client.Files().ForSession("")
-	if _, err := files.Get(context.Background(), "file_1"); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := files.Get(t.Context(), "file_1"); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Get error = %v, want ErrInvalidArgument", err)
 	}
-	if err := files.Delete(context.Background(), "file_1"); !errors.Is(err, ErrInvalidArgument) {
+	if err := files.Delete(t.Context(), "file_1"); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Delete error = %v, want ErrInvalidArgument", err)
 	}
-	if _, err := files.Upload(context.Background(), "n", strings.NewReader("x")); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := files.Upload(t.Context(), "n", strings.NewReader("x")); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Upload error = %v, want ErrInvalidArgument", err)
 	}
 }
@@ -219,7 +219,7 @@ func TestSessionFileKeepsTheBodyItDecodedFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	file, err := client.Files().ForSession("conv_1").Get(context.Background(), "file_1")
+	file, err := client.Files().ForSession("conv_1").Get(t.Context(), "file_1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestRejectedUploadLeavesNoGoroutine(t *testing.T) {
 	// starts and before any request exists.
 	for range 5 {
 		if _, err := client.Files().ForSession(".").Upload(
-			context.Background(), "a.txt", strings.NewReader("payload")); err == nil {
+			t.Context(), "a.txt", strings.NewReader("payload")); err == nil {
 			t.Fatal("Upload = nil error for a path segment that cannot be resolved")
 		}
 	}
@@ -298,7 +298,7 @@ func TestDownloadWritesAtMostTheBound(t *testing.T) {
 			}
 			var sink bytes.Buffer
 			n, err := client.Files().ForSession("c").Download(
-				context.Background(), "f", &sink, bound)
+				t.Context(), "f", &sink, bound)
 
 			if sink.Len() > bound {
 				t.Errorf("wrote %d bytes to a writer that declared %d", sink.Len(), bound)

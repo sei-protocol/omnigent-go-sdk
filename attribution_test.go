@@ -9,16 +9,20 @@ import (
 	"testing"
 )
 
-// TestNoticeNamesEveryFileCarryingUpstreamProse enforces an obligation that was
-// documented and then immediately broken.
+// TestNoticeNamesEveryFileCarryingUpstreamProse keeps NOTICE exhaustive.
 //
 // Doc comments in this package reproduce the vendored description's own schema
 // and property text, which makes those files derivative work under the upstream
-// Apache-2.0 licence. NOTICE names them. AGENTS.md said that list was
-// "exhaustive by measurement, not by convention. Nothing checks it for you" —
-// and the next change added two more files without touching NOTICE.
+// Apache-2.0 licence, and NOTICE names them. The list is a measurement, not a
+// convention: a file that starts carrying upstream prose has to be added, and one
+// that stops has to be removed.
 //
-// This is the something that checks it.
+// Checked in both directions, because either error is wrong. An unnamed file is
+// unattributed reproduction; a named file that carries none overstates what this
+// module borrowed.
+//
+// A description must be at least 45 runes to count, which is long enough that a
+// match is reproduction rather than two people describing one field the same way.
 func TestNoticeNamesEveryFileCarryingUpstreamProse(t *testing.T) {
 	descriptions := upstreamDescriptions(t)
 	if len(descriptions) < 100 {

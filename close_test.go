@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -46,7 +45,7 @@ func TestCloseReleasesTheConnectionPool(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		var out map[string]any
-		if err := c.doJSON(context.Background(), http.MethodGet,
+		if err := c.doJSON(t.Context(), http.MethodGet,
 			[]string{"v1", "sessions", "conv_1"}, nil, nil, &out); err != nil {
 			t.Fatalf("doJSON: %v", err)
 		}

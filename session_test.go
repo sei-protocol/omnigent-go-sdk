@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,7 +83,7 @@ func TestChildrenTreeEndsOnACycle(t *testing.T) {
 	var root *TreeNode
 	var err error
 	go func() {
-		root, err = client.Sessions().ChildrenTree(context.Background(), "root", TreeOptions{MaxDepth: 10})
+		root, err = client.Sessions().ChildrenTree(t.Context(), "root", TreeOptions{MaxDepth: 10})
 		close(done)
 	}()
 	select {
@@ -141,7 +140,7 @@ func TestChildrenTreePagesEveryChild(t *testing.T) {
 		"root": {{ids: []string{"a"}, hasMore: true}, {ids: []string{"b"}}},
 	})
 
-	root, err := client.Sessions().ChildrenTree(context.Background(), "root", TreeOptions{})
+	root, err := client.Sessions().ChildrenTree(t.Context(), "root", TreeOptions{})
 	if err != nil {
 		t.Fatalf("ChildrenTree: %v", err)
 	}
@@ -163,7 +162,7 @@ func TestChildrenTreeStopsAtTheDepthCapAndSaysSo(t *testing.T) {
 		"b":    {{ids: []string{"c"}}},
 	})
 
-	root, err := client.Sessions().ChildrenTree(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	root, err := client.Sessions().ChildrenTree(t.Context(), "root", TreeOptions{MaxDepth: 1})
 	if err != nil {
 		t.Fatalf("ChildrenTree: %v", err)
 	}
@@ -188,7 +187,7 @@ func TestSubtreeBusyReportsAnIncompleteWalkRatherThanAFalseNegative(t *testing.T
 		"a":    {{ids: []string{"b"}}},
 	})
 
-	busy, complete, err := client.Sessions().SubtreeBusy(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	busy, complete, err := client.Sessions().SubtreeBusy(t.Context(), "root", TreeOptions{MaxDepth: 1})
 	if err != nil {
 		t.Fatalf("SubtreeBusy: %v", err)
 	}
@@ -249,7 +248,7 @@ func TestListStopsWhenTheCallerStopsRanging(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	seen := 0
-	for _, err := range client.Sessions().List(context.Background(), ListSessionsOptions{}) {
+	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -279,7 +278,7 @@ func TestListTerminatesOnAnEmptyCursorEvenWhenTheServerSaysMore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	for _, err := range client.Sessions().List(context.Background(), ListSessionsOptions{}) {
+	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -297,7 +296,7 @@ func TestRejectedArgumentReachesTheCallerThroughTheSequence(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	got := 0
-	for _, err := range client.Sessions().ListItems(context.Background(), "", SessionItemsOptions{}) {
+	for _, err := range client.Sessions().ListItems(t.Context(), "", SessionItemsOptions{}) {
 		got++
 		if !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("error = %v, want ErrInvalidArgument", err)
@@ -323,7 +322,7 @@ func TestClearingAnOverrideSendsTheServersAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Sessions().ClearModelOverride(context.Background(), "conv_1"); err != nil {
+	if _, err := client.Sessions().ClearModelOverride(t.Context(), "conv_1"); err != nil {
 		t.Fatalf("ClearModelOverride: %v", err)
 	}
 	// The description clears on an alias, not on an empty value. An empty string
@@ -340,7 +339,7 @@ func TestSetModelOverrideRefusesTheEmptyString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Sessions().SetModelOverride(context.Background(), "conv_1", ""); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := client.Sessions().SetModelOverride(t.Context(), "conv_1", ""); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("error = %v, want ErrInvalidArgument: the empty string is not the clear", err)
 	}
 }
@@ -373,7 +372,7 @@ func TestSubtreeBusyReportsACompleteWalk(t *testing.T) {
 		"a":    {{ids: nil}},
 	})
 
-	busy, complete, err := client.Sessions().SubtreeBusy(context.Background(), "root", TreeOptions{MaxDepth: 3})
+	busy, complete, err := client.Sessions().SubtreeBusy(t.Context(), "root", TreeOptions{MaxDepth: 3})
 	if err != nil {
 		t.Fatalf("SubtreeBusy: %v", err)
 	}
@@ -412,7 +411,7 @@ func TestListingThatNeverAdvancesEnds(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var got error
-	for _, err := range client.Sessions().List(context.Background(), ListSessionsOptions{}) {
+	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
 		if err != nil {
 			got = err
 			break
@@ -462,7 +461,7 @@ func TestChildrenTreeBoundsEveryLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Sessions().ChildrenTree(context.Background(), "root",
+	if _, err := client.Sessions().ChildrenTree(t.Context(), "root",
 		TreeOptions{MaxDepth: 3, Concurrency: 4}); err != nil {
 		t.Fatalf("ChildrenTree: %v", err)
 	}
@@ -521,7 +520,7 @@ func TestSubtreeBusyIsAFunctionOfServerStateNotResponseOrder(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			busy, _, err := client.Sessions().SubtreeBusy(
-				context.Background(), "root", TreeOptions{MaxDepth: 3})
+				t.Context(), "root", TreeOptions{MaxDepth: 3})
 			if err != nil {
 				t.Fatalf("SubtreeBusy: %v", err)
 			}
@@ -543,7 +542,7 @@ func TestChildrenTreeNamesWhyANodeHasNoChildren(t *testing.T) {
 		"cycle": {{ids: []string{"root"}}},
 	})
 
-	root, err := client.Sessions().ChildrenTree(context.Background(), "root", TreeOptions{MaxDepth: 1})
+	root, err := client.Sessions().ChildrenTree(t.Context(), "root", TreeOptions{MaxDepth: 1})
 	if err != nil {
 		t.Fatalf("ChildrenTree: %v", err)
 	}

@@ -73,13 +73,13 @@ func TestTransfersOutliveTheUnaryBudget(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	files := client.Files().ForSession("s1")
 
-	if _, err := files.Upload(context.Background(), "big.bin",
+	if _, err := files.Upload(t.Context(), "big.bin",
 		&trickleReader{chunks: chunks, delay: delay}); err != nil {
 		t.Errorf("upload of a body that outlives the unary budget: %v", err)
 	}
 
 	var sink strings.Builder
-	n, err := files.Download(context.Background(), "f1", &sink, 1<<20)
+	n, err := files.Download(t.Context(), "f1", &sink, 1<<20)
 	if err != nil {
 		t.Errorf("download that outlives the unary budget: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWithTransferTimeoutBoundsATransfer(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	var sink strings.Builder
-	_, err = client.Files().ForSession("s1").Download(context.Background(), "f1", &sink, 1<<20)
+	_, err = client.Files().ForSession("s1").Download(t.Context(), "f1", &sink, 1<<20)
 	if err == nil {
 		t.Fatal("a transfer outran WithTransferTimeout and still succeeded")
 	}
@@ -124,7 +124,7 @@ func TestTransferHonoursTheCallersContext(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	var sink strings.Builder
@@ -155,7 +155,7 @@ func TestUnaryCallsKeepTheirBudget(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	if _, err := client.Sessions().Get(context.Background(), "s1", GetSessionOptions{}); err == nil {
+	if _, err := client.Sessions().Get(t.Context(), "s1", GetSessionOptions{}); err == nil {
 		t.Fatal("a unary call outran WithUnaryTimeout and still succeeded")
 	} else if errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("the call was rejected rather than timed out: %v", err)

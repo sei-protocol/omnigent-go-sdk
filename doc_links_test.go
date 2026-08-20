@@ -29,9 +29,9 @@ var stdPackagesInDocLinks = map[string]bool{
 //
 // A dangling link renders as literal brackets and sends a reader looking for a
 // symbol that is not there. The costly version names the wrong owner — a link to
-// Client.Interrupt when the method is on Sessions — which reads as authoritative
-// and is wrong. So a member link is checked against the member itself, and is
-// never satisfied by the owning type alone.
+// Type.Method where Method belongs to some other type — because it reads as
+// authoritative and is wrong. So a member link is checked against the member
+// itself, and is never satisfied by the owning type alone.
 func TestEveryDocLinkResolves(t *testing.T) {
 	t.Parallel()
 

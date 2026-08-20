@@ -327,3 +327,62 @@ func quote(s string) string {
 	encoded, _ := json.Marshal(s)
 	return string(encoded)
 }
+
+// TestEventTypeReportsTheWireDiscriminator pins what the interface method is for:
+// reaching the discriminator without a switch over every variant.
+//
+// The value is the frame's own, not a constant per Go type, so a decoded event
+// reports what the server sent — including a type this build does not know.
+func TestEventTypeReportsTheWireDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	for _, wire := range []string{
+		"session.status",
+		"response.output_text.delta",
+		"turn.started",
+		"session.heartbeat",
+		"response.heartbeat",
+	} {
+		frame := []byte(`{"type":"` + wire + `"}`)
+		ev, err := DecodeEvent(frame)
+		if err != nil {
+			t.Fatalf("DecodeEvent(%s): %v", wire, err)
+		}
+		if got := ev.EventType(); got != wire {
+			t.Errorf("EventType() = %q, want %q", got, wire)
+		}
+	}
+
+	// An unknown discriminator reaches the caller through the same accessor.
+	ev, err := DecodeEvent([]byte(`{"type":"session.invented.tomorrow"}`))
+	if err != nil {
+		t.Fatalf("DecodeEvent of an unknown type: %v", err)
+	}
+	if _, ok := ev.(UnknownEvent); !ok {
+		t.Fatalf("got %T, want UnknownEvent", ev)
+	}
+	if got := ev.EventType(); got != "session.invented.tomorrow" {
+		t.Errorf("EventType() = %q on an unknown frame", got)
+	}
+}
+
+// TestEveryRegisteredVariantReportsItsOwnType pins the accessor across the whole
+// union, so a variant added without a working EventType fails here rather than
+// returning an empty string to a caller routing on it.
+func TestEveryRegisteredVariantReportsItsOwnType(t *testing.T) {
+	t.Parallel()
+
+	if len(eventRegistry) < 50 {
+		t.Fatalf("registry holds %d variants; the walk is not reading it", len(eventRegistry))
+	}
+	for wire := range eventRegistry {
+		ev, err := DecodeEvent([]byte(`{"type":"` + wire + `"}`))
+		if err != nil {
+			t.Errorf("DecodeEvent(%s): %v", wire, err)
+			continue
+		}
+		if got := ev.EventType(); got != wire {
+			t.Errorf("%T.EventType() = %q, want %q", ev, got, wire)
+		}
+	}
+}

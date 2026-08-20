@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ func TestOptionsReachTheWire(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if _, err := client.Sessions().Get(context.Background(), "conv_1", GetSessionOptions{}); err != nil {
+	if _, err := client.Sessions().Get(t.Context(), "conv_1", GetSessionOptions{}); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got := header.Get("User-Agent"); got != "test-agent/1.0" {
@@ -109,7 +108,7 @@ func TestErrorInterfaceCarriesTheStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = client.Sessions().Get(context.Background(), "conv_1", GetSessionOptions{})
+	_, err = client.Sessions().Get(t.Context(), "conv_1", GetSessionOptions{})
 	if err == nil {
 		t.Fatal("Get = nil error for a 429")
 	}

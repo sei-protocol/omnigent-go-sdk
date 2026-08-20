@@ -34,7 +34,7 @@ func TestGateFetchHoldsASlotForOneFetchOnly(t *testing.T) {
 	if !free() {
 		t.Fatal("a slot was held before any fetch")
 	}
-	if _, err := gated(context.Background(), ""); err != nil {
+	if _, err := gated(t.Context(), ""); err != nil {
 		t.Fatalf("gated fetch: %v", err)
 	}
 	if !heldDuringFetch {
@@ -52,7 +52,7 @@ func TestGateFetchStopsWaitingOnACancelledContext(t *testing.T) {
 	tokens := make(chan struct{}, 1)
 	tokens <- struct{}{} // the only slot is taken and never released
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	var reached bool

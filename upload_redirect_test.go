@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -88,7 +87,7 @@ func TestUploadClassifiesARedirectItCannotFollow(t *testing.T) {
 			defer func() { _ = client.Close() }()
 
 			_, err = client.Files().ForSession("s1").Upload(
-				context.Background(), "f.txt", strings.NewReader("payload"))
+				t.Context(), "f.txt", strings.NewReader("payload"))
 			if err == nil {
 				t.Fatal("a redirected upload reported success")
 			}

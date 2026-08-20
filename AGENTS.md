@@ -10,16 +10,15 @@ upstream Python client in `omnigent-ai/omnigent`, under `sdks/python-client`. Th
 client is an agent-interaction library; this one was a typed transport, and the
 rebuild closes the difference.
 
-Read `doc.go` before changing the public surface. There is no code generator;
-re-adding one is a one-way door.
+Read `doc.go` before changing the public surface.
 
 ## The vendored description is the contract
 
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Six conformance tests check every exported type, across five
-  dimensions.
+  declares. Six conformance tests check every exported type the decoder reaches,
+  across five dimensions.
   They do not check presence: omitting a property the document declares passes,
   deliberately.
 - Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
@@ -30,12 +29,14 @@ re-adding one is a one-way door.
   Upstream moves more than once a day, and `openapi.json` moves independently of
   the Python client beside it.
 - Add a file to `NOTICE` when you copy an upstream schema or property description
-  into it. `TestNoticeNamesEveryFileCarryingUpstreamProse` enforces the list in
-  both directions, so a file you forget fails the suite rather than shipping
-  unattributed. `NOTICE` is the list; do not restate it here.
+  into it. The list is exhaustive by measurement, not by convention, and
+  `TestNoticeNamesEveryFileCarryingUpstreamProse` measures it in both directions,
+  so a file you forget fails the suite rather than shipping unattributed.
+  `NOTICE` is the list; do not restate it here.
 
-This module runs no code generator. Do not add one. The previous one decided the
-shape of the public surface, which is what this rebuild removes.
+This module runs no code generator. Do not add one: re-adding one is a one-way
+door. The previous one decided the shape of the public surface, which is what this
+rebuild removes.
 
 ## Checks
 

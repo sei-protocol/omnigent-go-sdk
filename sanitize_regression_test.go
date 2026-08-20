@@ -1,7 +1,6 @@
 package omnigent
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,7 +33,7 @@ func TestUploadRefusesAFilenameThatWouldForgeAMultipartHeader(t *testing.T) {
 		"ok.txt\nX-Injected: yes",
 		"ok\x00.txt",
 	} {
-		_, err := client.Files().ForSession("s1").Upload(context.Background(), name, strings.NewReader("x"))
+		_, err := client.Files().ForSession("s1").Upload(t.Context(), name, strings.NewReader("x"))
 		if err == nil {
 			t.Fatalf("filename %q was accepted", name)
 		}
@@ -91,7 +90,7 @@ func TestResolveAgentBoundsWhatTheServerCanPutInAnError(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	_, err = client.Sessions().ResolveAgent(context.Background(), "absent")
+	_, err = client.Sessions().ResolveAgent(t.Context(), "absent")
 	if err == nil {
 		t.Fatal("want ErrNotFound")
 	}
