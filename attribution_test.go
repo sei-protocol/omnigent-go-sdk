@@ -34,10 +34,18 @@ func TestNoticeNamesEveryFileCarryingUpstreamProse(t *testing.T) {
 		t.Fatalf("read NOTICE: %v", err)
 	}
 
+	// internal/api is in scope because the generated file is where the upstream
+	// descriptions now land. A scan of the root package alone would report the
+	// attribution as complete while the file carrying the prose went unnamed.
 	sources, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
+	generated, err := filepath.Glob("internal/api/*.go")
+	if err != nil {
+		t.Fatalf("glob internal/api: %v", err)
+	}
+	sources = append(sources, generated...)
 	for _, path := range sources {
 		if strings.HasSuffix(path, "_test.go") {
 			continue

@@ -1,0 +1,18 @@
+# Generation config for internal/api. Run it with bin/generate.sh, never
+# directly: the input is spec/preprocess.py's output, not spec/openapi.json.
+#
+# See docs/adr/0001-generate-wire-types-behind-a-facade.md.
+package: api
+output: internal/api/api.gen.go
+generate:
+  models: true
+  client: true
+output-options:
+  # ID, not Id. The list this carries knows the common initialisms; the ones it
+  # does not know arrive as x-go-name from spec/preprocess.py.
+  name-normalizer: ToCamelCaseWithInitialisms
+  # Mandatory, not a preference. oapi-codegen does not read the OAS 3.2
+  # itemSchema keyword, which is the only path from a route to
+  # ServerStreamEvent. Pruning therefore finds the whole event union
+  # unreachable and drops all 53 variants without a word.
+  skip-prune: true

@@ -2,10 +2,11 @@
 
 ## Status
 
-Proposed, 2026-08-20.
+Accepted, 2026-08-20.
 
-Re-adding a generator is a one-way door. Accept or reject this record. It does
-not describe what the module already does.
+The pull request that changed this line is the implementation. `AGENTS.md` no
+longer rules out a generator. The last section records where building this
+corrected the record.
 
 ## Context
 
@@ -66,7 +67,7 @@ decisions the document cannot carry.
   | `x-go-type: float64` | 12 | a formatless `number` becomes `float32` |
   | `x-go-type-skip-optional-pointer` | 71 | `*[]T` and `*map[K]V` on optional collections |
   | `x-go-name` | 18 | `LlmModel`, `TotalCostUsd`, `McpStartup` |
-  | enum to `x-go-type: string` | 21 | one wire enum becoming 81 Go types |
+  | closed string to `x-go-type: string` | 81 | one wire enum becoming 81 Go types |
   | schema rename | 2 | `McpServerStartup`, `SessionMcpStartupEvent` |
   | `x-go-type: json.RawMessage` | 1 | deferred decode on `ConversationItem.data` |
 
@@ -166,3 +167,38 @@ the request path across a generated types package and a hand-written caller for
 no gain. The generated `ClientWithResponses` returns typed responses, and
 `HttpRequestDoer` accepts the policy-carrying `*http.Client` this module already
 builds. This module therefore gains the client half at no cost.
+
+## What building it corrected
+
+Four claims above did not survive the implementation. They stand as written. A
+record that edits its own reasoning afterwards stops being evidence of the
+decision it claims to hold.
+
+- **The enum transform was undercounted, at 21 sites rather than 81.** Every
+  event variant pins its discriminator with `const`, not `enum`, and the
+  transform tested only for `enum`. Each generated variant then carried its own
+  `Type` type, which `EventType() string` cannot return. The build failed rather
+  than shipping a wrong type, which is milder than the negative above predicts.
+- **`schemaFor` did not retire, and neither did its tests.** The 94-row table
+  went. A derivation replaced it: a type declared over `api.Y` names schema `Y`,
+  so the declaration is the mapping. It reproduces the old table exactly,
+  including all seven divergences. The tests survive with a changed purpose: they
+  catch `spec/preprocess.py` stamping the wrong type rather than a hand-authoring
+  mistake.
+- **The wire types kept their curated prose.** An alias carries the doc comment
+  above it, so the type-level prose in `types.go` and `session_types.go`
+  survived. Only the field-level comments became upstream's one-line
+  descriptions.
+- **The attribution gate needed widening.** The generated file reproduces 483
+  upstream descriptions, and `TestNoticeNamesEveryFileCarryingUpstreamProse`
+  globbed the root package alone. It reported the attribution as complete while
+  the file carrying the prose went unnamed.
+
+The implementation also added two gates this record did not propose.
+`TestEveryUnionVariantHasAGoType` fails when the document declares an event the
+decoder would return as `UnknownEvent`. The doc-link check now follows an alias
+into `internal/api` rather than going blind at the package boundary.
+
+Measured after the change: `types.go` 270 lines to 43, `session_types.go` 939 to
+94, `event.go` 1283 to 680, `enums.go` unchanged at 151, and
+`internal/api/api.gen.go` at 29735 generated lines.

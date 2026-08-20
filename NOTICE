@@ -16,14 +16,18 @@ Specifically:
   spec/openapi.json is a verbatim vendored copy of that project's OpenAPI
   document. spec/README.md records the upstream commit it came from.
 
-  types.go, event.go, session_types.go and enums.go declare Go types and
-  constants mirroring that document's schemas, and their doc comments reproduce
-  the document's own schema and property descriptions.
+  internal/api/api.gen.go is generated from that document by oapi-codegen. Its
+  Go types mirror the document's schemas, and its doc comments reproduce the
+  document's own schema and property descriptions.
 
-These files were previously produced by a code generator. They are now written
-by hand, which changes how they are maintained and not what they derive from:
-the descriptions are still the upstream project's, so this attribution still
-applies.
+  event.go and enums.go declare Go types and constants mirroring those schemas,
+  and their doc comments reproduce the document's descriptions.
+
+How these files are produced has changed more than once, and it does not change
+what they derive from. The descriptions are the upstream project's whether a
+generator copied them or a person did, so this attribution applies either way.
+A test keeps the list above exhaustive in both directions, over the root package
+and internal/api: see TestNoticeNamesEveryFileCarryingUpstreamProse.
 
 Attribution notices in the upstream project's NOTICE file that pertain to its
 Python runtime dependencies are omitted here, as this Software contains no part

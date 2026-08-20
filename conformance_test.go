@@ -6,10 +6,12 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -25,113 +27,75 @@ import (
 // package omits passes, deliberately: the surface is meant to be smaller than the
 // document, not equal to it.
 
-// schemaFor names the spec schema each hand-authored type mirrors.
+// schemaFor names the spec schema each exported type mirrors.
 //
-// A type absent from this map is not checked, so [TestEveryMirroredTypeIsMapped]
+// Derived, not written. Every mirrored type is declared over one in internal/api
+// as `type X = api.Y` or `type X api.Y`, so Y is the schema name and the
+// declaration is the mapping. A hand-written table said the same thing in 94
+// rows, 87 of which mapped a name to itself, and went stale on every rename.
+//
+// A type absent from the result is not checked, so [TestEveryMirroredTypeIsMapped]
 // holds the event half to the decoder's own registry: a variant the decoder knows
-// and this map does not is a failure, not a silent skip. The support half is a
-// plain list, because nothing else enumerates it.
-var schemaFor = map[string]string{
-	"BrowserActionRequestEvent":           "BrowserActionRequestEvent",
-	"ClientTaskCancelEvent":               "ClientTaskCancelEvent",
-	"CompactionCompletedEvent":            "CompactionCompletedEvent",
-	"CompactionFailedEvent":               "CompactionFailedEvent",
-	"CompactionInProgressEvent":           "CompactionInProgressEvent",
-	"ElicitationRequestEvent":             "ElicitationRequestEvent",
-	"ElicitationResolvedEvent":            "ElicitationResolvedEvent",
-	"ErrorEvent":                          "ErrorEvent",
-	"InProgressEvent":                     "InProgressEvent",
-	"IncompleteEvent":                     "IncompleteEvent",
-	"OutputFileDoneEvent":                 "OutputFileDoneEvent",
-	"OutputItemDoneEvent":                 "OutputItemDoneEvent",
-	"OutputTextDeltaEvent":                "OutputTextDeltaEvent",
-	"PolicyDeniedEvent":                   "PolicyDeniedEvent",
-	"QueuedEvent":                         "QueuedEvent",
-	"ReasoningStartedEvent":               "ReasoningStartedEvent",
-	"ReasoningSummaryTextDeltaEvent":      "ReasoningSummaryTextDeltaEvent",
-	"ReasoningTextDeltaEvent":             "ReasoningTextDeltaEvent",
-	"ResponseCancelledEvent":              "CancelledEvent",
-	"ResponseCompletedEvent":              "CompletedEvent",
-	"ResponseCreatedEvent":                "CreatedEvent",
-	"ResponseFailedEvent":                 "FailedEvent",
-	"ResponseHeartbeatEvent":              "HeartbeatEvent",
-	"RetryEvent":                          "RetryEvent",
-	"SessionAgentChangedEvent":            "SessionAgentChangedEvent",
-	"SessionChangedFilesInvalidatedEvent": "SessionChangedFilesInvalidatedEvent",
-	"SessionChildSessionUpdatedEvent":     "SessionChildSessionUpdatedEvent",
-	"SessionCollaborationModeEvent":       "SessionCollaborationModeEvent",
-	"SessionCreatedEvent":                 "SessionCreatedEvent",
-	"SessionHeartbeatEvent":               "SessionHeartbeatEvent",
-	"SessionInputConsumedEvent":           "SessionInputConsumedEvent",
-	"SessionInterruptedEvent":             "SessionInterruptedEvent",
-	"SessionMCPStartupEvent":              "SessionMcpStartupEvent",
-	"SessionModelEvent":                   "SessionModelEvent",
-	"SessionModelOptionsEvent":            "SessionModelOptionsEvent",
-	"SessionPresenceEvent":                "SessionPresenceEvent",
-	"SessionReasoningEffortEvent":         "SessionReasoningEffortEvent",
-	"SessionResourceCreatedEvent":         "SessionResourceCreatedEvent",
-	"SessionResourceDeletedEvent":         "SessionResourceDeletedEvent",
-	"SessionSandboxStatusEvent":           "SessionSandboxStatusEvent",
-	"SessionSkillsEvent":                  "SessionSkillsEvent",
-	"SessionStatusEvent":                  "SessionStatusEvent",
-	"SessionSupersededEvent":              "SessionSupersededEvent",
-	"SessionTerminalActivityEvent":        "SessionTerminalActivityEvent",
-	"SessionTerminalPendingEvent":         "SessionTerminalPendingEvent",
-	"SessionTodosEvent":                   "SessionTodosEvent",
-	"SessionUsageEvent":                   "SessionUsageEvent",
-	"ToolOutputDeltaEvent":                "ToolOutputDeltaEvent",
-	"TurnCancelledEvent":                  "TurnCancelledEvent",
-	"TurnCompletedEvent":                  "TurnCompletedEvent",
-	"TurnFailedEvent":                     "TurnFailedEvent",
-	"TurnStartedEvent":                    "TurnStartedEvent",
+// and this map does not is a failure, not a silent skip.
+var schemaFor = sync.OnceValue(derivedSchemaFor)
 
-	// Types the session and file surface reaches. Their schemas are declared, so
-	// the gate covers them; the file routes themselves declare no shape at all and
-	// are named in doc.go instead.
-	"AgentObject":                 "AgentObject",
-	"ChildSessionList":            "ChildSessionList",
-	"ChildSessionSummary":         "ChildSessionSummary",
-	"CompactionData":              "CompactionData",
-	"ConversationDeleted":         "ConversationDeleted",
-	"ConversationItem":            "ConversationItem",
-	"ErrorData":                   "ErrorData",
-	"FunctionCallData":            "FunctionCallData",
-	"FunctionCallOutputData":      "FunctionCallOutputData",
-	"MCPServerSummary":            "MCPServerSummary",
-	"MessageData":                 "MessageData",
-	"NativeModelOption":           "NativeModelOption",
-	"NativeReasoningEffortOption": "NativeReasoningEffortOption",
-	"NativeToolData":              "NativeToolData",
-	"PaginatedList":               "PaginatedList",
-	"PolicySummary":               "PolicySummary",
-	"ReasoningData":               "ReasoningData",
-	"ResourceEventData":           "ResourceEventData",
-	"RoutingDecisionData":         "RoutingDecisionData",
-	"SandboxStatus":               "SandboxStatus",
-	"SessionGitOptions":           "SessionGitOptions",
-	"SessionForkRequest":          "SessionForkRequest",
-	"SessionList":                 "SessionList",
-	"SessionListItem":             "SessionListItem",
-	"SessionResponse":             "SessionResponse",
-	"SkillSummary":                "SkillSummary",
-	"SlashCommandData":            "SlashCommandData",
-	"TerminalCommandData":         "TerminalCommandData",
-	"UpdateSessionRequest":        "UpdateSessionRequest",
+// schemaRenames undoes the schema renames spec/preprocess.py applies.
+//
+// Two schemas are generated under a different name than the document gives them,
+// because Go spells an initialism in capitals and the document does not. These
+// tests read spec/openapi.json rather than the prepared copy, so they need the
+// document's spelling. Keep this in step with rename_schemas in
+// spec/preprocess.py; TestEverySchemaRenameIsReal fails when an entry stops
+// matching the document.
+var schemaRenames = map[string]string{
+	"MCPServerStartup":       "McpServerStartup",
+	"SessionMCPStartupEvent": "SessionMcpStartupEvent",
+}
 
-	// Support types the event union reaches.
-	"ConversationRef":             "ConversationRef",
-	"ElicitationRequestParams":    "ElicitationRequestParams",
-	"ErrorDetail":                 "ErrorDetail",
-	"IncompleteDetails":           "IncompleteDetails",
-	"MCPServerStartup":            "McpServerStartup",
-	"ModelUsage":                  "ModelUsage",
-	"PresenceViewer":              "PresenceViewer",
-	"ResponseObject":              "ResponseObject",
-	"RetryErrorDetail":            "RetryErrorDetail",
-	"SessionInputConsumedPayload": "SessionInputConsumedPayload",
-	"SessionInterruptedPayload":   "SessionInterruptedPayload",
-	"Usage":                       "Usage",
-	"UsageDetails":                "UsageDetails",
+// derivedSchemaFor reads the package's own declarations for their api targets.
+func derivedSchemaFor() map[string]string {
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		panic("glob: " + err.Error())
+	}
+
+	out := map[string]string{}
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			panic("parse " + path + ": " + err.Error())
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				sel, ok := ts.Type.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok || pkg.Name != "api" {
+					continue
+				}
+				schema := sel.Sel.Name
+				if original, renamed := schemaRenames[schema]; renamed {
+					schema = original
+				}
+				out[ts.Name.Name] = schema
+			}
+		}
+	}
+	return out
 }
 
 // loadSpec reads the vendored description once per test.
@@ -274,7 +238,7 @@ func wireName(field reflect.StructField) (string, bool) {
 // and the field, type and enum checks all skip it in silence.
 func TestEveryMappedTypeIsReachable(t *testing.T) {
 	reached := mirroredTypes(t)
-	for goName := range schemaFor {
+	for goName := range schemaFor() {
 		if _, ok := reached[goName]; !ok {
 			t.Errorf("schemaFor names %s, but no root reaches it, so nothing checks its fields", goName)
 		}
@@ -286,7 +250,7 @@ func TestEveryMappedTypeIsReachable(t *testing.T) {
 // skip the field check for that variant.
 func TestEveryMirroredTypeIsMapped(t *testing.T) {
 	for name := range mirroredTypes(t) {
-		if _, ok := schemaFor[name]; !ok {
+		if _, ok := schemaFor()[name]; !ok {
 			t.Errorf("%s is reachable from the decoder but names no spec schema; add it to schemaFor", name)
 		}
 	}
@@ -306,7 +270,7 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName, mapped := schemaFor[goName]
+		schemaName, mapped := schemaFor()[goName]
 		if !mapped {
 			continue // TestEveryMirroredTypeIsMapped owns this failure
 		}
@@ -488,7 +452,7 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	schemaTypes := make(map[string]reflect.Type, len(types)*2)
 	for goName, rt := range types {
 		schemaTypes[goName] = rt
-		if schemaName, ok := schemaFor[goName]; ok {
+		if schemaName, ok := schemaFor()[goName]; ok {
 			schemaTypes[schemaName] = rt
 		}
 	}
@@ -500,7 +464,7 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName, mapped := schemaFor[goName]
+		schemaName, mapped := schemaFor()[goName]
 		if !mapped {
 			continue // TestEveryMirroredTypeIsMapped owns this failure
 		}
@@ -588,7 +552,7 @@ func TestEveryDeclaredEnumValueHasAConstant(t *testing.T) {
 	constants := declaredConstants(t)
 	declared := 0
 
-	for goName, schemaName := range schemaFor {
+	for goName, schemaName := range schemaFor() {
 		node, ok := schemas[schemaName].(map[string]any)
 		if !ok {
 			continue
@@ -693,4 +657,139 @@ func goFieldName(wire string) string {
 		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
 	}
 	return b.String()
+}
+
+// TestEveryUnionVariantHasAGoType pins the direction the field checks cannot
+// cover: that this package reaches every event the document declares.
+//
+// The other conformance tests read a Go type and ask what the document says
+// about it, so a schema nothing declares is a schema nothing checks. That is how
+// a new event variant arrives unnoticed: the spec gains one, the suite stays
+// green, and a caller receives it as [UnknownEvent] with no signal that a typed
+// variant was available.
+//
+// This runs against the vendored document, so it catches a spec refresh that
+// nobody regenerated for. It cannot catch the vendored copy itself going stale
+// against the server, which needs the network and lives outside `go test`.
+func TestEveryUnionVariantHasAGoType(t *testing.T) {
+	t.Parallel()
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				OneOf []struct {
+					Ref string `json:"$ref"`
+				} `json:"oneOf"`
+				Discriminator struct {
+					Mapping map[string]string `json:"mapping"`
+				} `json:"discriminator"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	raw, err := os.ReadFile("spec/openapi.json")
+	if err != nil {
+		t.Fatalf("read spec: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode spec: %v", err)
+	}
+
+	union := doc.Components.Schemas["ServerStreamEvent"]
+	if len(union.Discriminator.Mapping) == 0 {
+		t.Fatal("ServerStreamEvent declares no discriminator mapping; the extraction is broken")
+	}
+
+	// The registry is what DecodeEvent dispatches on, so checking it checks the
+	// behaviour rather than the mere presence of a Go declaration.
+	for wire := range union.Discriminator.Mapping {
+		if _, ok := eventRegistry[wire]; !ok {
+			t.Errorf("the document declares event %q and this package decodes it as UnknownEvent; "+
+				"add a variant and a registry entry, or record why it is deliberately untyped", wire)
+		}
+	}
+
+	// And the reverse, so a removed event does not leave a decoder behind that
+	// nothing can produce.
+	for wire := range eventRegistry {
+		if _, ok := union.Discriminator.Mapping[wire]; !ok {
+			t.Errorf("this package decodes event %q, which the document no longer declares", wire)
+		}
+	}
+}
+
+// TestSchemaForIsDerivedFromDeclarations pins that the derivation found the
+// declarations, so an empty result cannot pass as an empty obligation.
+//
+// Every check keyed on [schemaFor] iterates it, so a derivation that silently
+// returned nothing would turn the whole conformance suite green while checking
+// no type at all. The floor is the guard against that, not a count worth
+// maintaining: raise it only if it starts obstructing a real removal.
+func TestSchemaForIsDerivedFromDeclarations(t *testing.T) {
+	t.Parallel()
+
+	const floor = 80
+	derived := schemaFor()
+	if len(derived) < floor {
+		t.Fatalf("derived %d type-to-schema pairs, want at least %d; the AST scan is not "+
+			"reading the declarations", len(derived), floor)
+	}
+	// A type declared over api must resolve to a schema the document declares,
+	// or the pair is noise rather than a mapping.
+	schemas := schemaNames(t)
+	for goName, schema := range derived {
+		if !schemas[schema] {
+			t.Errorf("%s is declared over api.%s, which the document does not declare; "+
+				"either the generated name diverges or schemaRenames needs an entry",
+				goName, schema)
+		}
+	}
+}
+
+// TestEverySchemaRenameIsReal pins that spec/preprocess.py's renames still
+// describe the document.
+//
+// [schemaRenames] exists to undo two renames applied before generation. Once the
+// document spells one of them the Go way, or drops it, the entry stops
+// describing anything and quietly stops mapping the type it was written for.
+func TestEverySchemaRenameIsReal(t *testing.T) {
+	t.Parallel()
+
+	schemas := schemaNames(t)
+	for generated, original := range schemaRenames {
+		if !schemas[original] {
+			t.Errorf("schemaRenames maps %s back to %s, which the document does not declare; "+
+				"drop the entry, or match the rename in spec/preprocess.py", generated, original)
+		}
+		if schemas[generated] {
+			t.Errorf("schemaRenames maps %s back to %s, but the document declares %s itself, "+
+				"so the rename is no longer needed", generated, original, generated)
+		}
+	}
+}
+
+// schemaNames returns the set of schema names spec/openapi.json declares.
+func schemaNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	raw, err := os.ReadFile("spec/openapi.json")
+	if err != nil {
+		t.Fatalf("read spec: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode spec: %v", err)
+	}
+	if len(doc.Components.Schemas) < 100 {
+		t.Fatalf("found only %d schemas; the extraction is broken", len(doc.Components.Schemas))
+	}
+
+	names := make(map[string]bool, len(doc.Components.Schemas))
+	for name := range doc.Components.Schemas {
+		names[name] = true
+	}
+	return names
 }

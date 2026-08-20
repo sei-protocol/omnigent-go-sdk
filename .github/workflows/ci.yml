@@ -109,3 +109,24 @@ jobs:
 
       - name: Run golangci-lint
         run: golangci-lint run
+
+      # Folded into this job rather than added as its own, because a new job name
+      # is advisory until someone edits the branch's required-checks list, and a
+      # check that cannot block is not a gate. See the note at the top of this
+      # file.
+      #
+      # This is the only check that catches a spec bump nobody regenerated for. A
+      # new event variant fails TestEveryUnionVariantHasAGoType and a retyped
+      # field fails the conformance suite, but a new field on an existing schema
+      # is invisible to both: they read a Go type and ask the document about it,
+      # so a field no Go type declares is a field nothing asks about.
+      - name: Install oapi-codegen
+        run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
+
+      - name: Check the generated package is current
+        run: |
+          bin/generate.sh
+          if ! git diff --exit-code -- internal/api; then
+            printf '\ninternal/api is not what the spec produces. Run bin/generate.sh and commit the result.\n' >&2
+            exit 1
+          fi

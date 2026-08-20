@@ -34,13 +34,23 @@ Read `doc.go` before changing the public surface.
   so a file you forget fails the suite rather than shipping unattributed.
   `NOTICE` is the list; do not restate it here.
 
-This module runs no code generator. Do not add one: re-adding one is a one-way
-door. The previous one decided the shape of the public surface, which is what this
-rebuild removes.
+`bin/generate.sh` produces `internal/api`. Run it after the spec moves, and commit
+the result. Never edit that package by hand: the next run discards the edit.
 
-`docs/adr/0001-generate-wire-types-behind-a-facade.md` proposes changing that, by
-generating into `internal/` where a generated name cannot reach a consumer. It is
-at status Proposed, so the rule above still holds.
+Generation runs over `spec/preprocess.py`'s output, not over `spec/openapi.json`.
+That stage stamps the Go type decisions no OpenAPI document can carry. Generating
+from the raw document compiles, and is wrong in twelve currency fields and
+seventy-one collections. Add a transform there rather than editing the generated
+file or the vendored spec.
+
+The public types are one-line declarations over that package. Use `type X = api.X`
+where the type carries no methods, and `type X api.X` where it does, because Go
+refuses a method on another package's type. Nothing in the public API names
+`internal/api`, so a generated identifier is never a name a consumer depends on.
+
+`docs/adr/0001-generate-wire-types-behind-a-facade.md` records the decision and
+its costs. It supersedes the rule that stood here, which ruled out a generator
+outright.
 
 ## Checks
 
@@ -51,9 +61,11 @@ bin/check.sh
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
 Run it before opening a pull request, and report what it said.
 
-The module has no dependencies. Adding one needs explicit human approval. A
-dependency's own `go` directive sets a floor this module cannot declare below, so
-one dependency decides who is able to import this package.
+The module depends only on what the generated client needs:
+`github.com/oapi-codegen/runtime`, and the two modules it pulls in. Adding
+another needs explicit human approval. A dependency's own `go` directive sets a
+floor this module cannot declare below, so one dependency decides who is able to
+import this package.
 
 ## Releases
 
