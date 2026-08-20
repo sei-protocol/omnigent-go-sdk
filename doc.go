@@ -6,10 +6,16 @@
 // policy, the error surface, the 52-variant [Event] union, and [Client.Stream]
 // for reading one session's server-sent events.
 //
-// The session, agent and file types are declared. No method reaches those routes
-// yet, and there is no turn-loop, transcript-block or tool-dispatch surface. A
-// caller needing those reaches the routes directly.
-// docs/adr/0001-rebuild-rather-than-reland.md records why.
+// It also carries the two namespaces. [Client.Sessions] covers a session's
+// lifecycle, the events posted to it, and its listings; [Client.Files] covers the
+// session-scoped file routes. Every listing is an iter.Seq2 that follows the
+// server's cursor, and [Sessions.ChildrenTree] walks a subtree under bounds the
+// caller sets.
+//
+// There is no turn-loop, transcript-block or tool-dispatch surface. A caller
+// needing those composes them over [Client.Stream] and [Sessions.PostEvent].
+// docs/adr/0001-rebuild-rather-than-reland.md records why this package was
+// rebuilt rather than relanded.
 //
 // The public API returns iter.Seq2, so building against this package needs Go
 // 1.23 or newer. go.mod declares that floor and CI builds it.
@@ -31,10 +37,19 @@
 //
 // # Optional fields
 //
-// Every optional field on a type in this package is a pointer, so a caller can
-// tell "the server sent zero" from "the server sent nothing". Slices and maps are
-// the exception: nil already carries that distinction, and a pointer to a slice
-// reads badly at a call site. [Ptr] is how a caller sets one.
+// On a type this package decodes, every optional field is a pointer, so a caller
+// can tell "the server sent zero" from "the server sent nothing". Slices and maps
+// are the exception: nil already carries that distinction, and a pointer to a
+// slice reads badly at a call site. [Ptr] is how a caller sets one.
+//
+// On a request type the caller fills — [SessionCreateRequest] and
+// [SessionEventInput] — an optional field is a plain value with omitempty, and
+// leaving it zero is how a caller declines to send it. Where the server needs an
+// explicit value rather than an absence, a named method carries it rather than a
+// magic empty string: [Sessions.ClearModelOverride], not ModelOverride = "".
+//
+// The conformance tests enforce the first rule for every mirrored type. A
+// hand-authored type is outside that gate, so it holds the rule by review.
 //
 // # Enumerated values
 //
@@ -84,8 +99,11 @@
 //
 // Go's http.Client.Timeout is a deadline on the whole exchange including reading
 // the response body, so any non-zero value severs a healthy long-lived stream.
-// This package therefore keeps two clients over one transport: unary calls carry
-// a whole-exchange timeout, and the streaming client's is zero.
+// This package therefore keeps three clients over one transport. Unary calls
+// carry a whole-exchange timeout. The streaming client's is zero, and so is the
+// transfer client's: a file's duration is its size over the network's rate, so
+// the bound that stops a wedged call is the bound that makes a large upload
+// impossible, and one number cannot be both.
 //
 // The unary bound defaults to 90 seconds, and [WithUnaryTimeout] moves it. It is
 // that long because the slowest routes wait on a runner before they answer and
@@ -94,6 +112,13 @@
 // goes on to make. The arithmetic behind the number sits beside the constant in
 // client.go. A deadline for one call still belongs on that call's context: this
 // bound is the backstop against a wedged connection, not a latency policy.
+//
+// A transfer — [SessionFiles.Upload] or [SessionFiles.Download] — is bounded by
+// its context instead, so a large file is limited by what the caller allows
+// rather than by a number sized for an RPC. [WithTransferTimeout] sets one
+// ceiling for every transfer when a caller wants one. Header latency stays
+// bounded either way by the transport, so a server that accepts a connection and
+// then says nothing still fails fast.
 //
 // Liveness on the stream is enforced instead by an idle watchdog — the server
 // emits a heartbeat frame every 15 seconds of queue silence, so a read that
@@ -111,7 +136,7 @@
 // a stream. Note what that does and does not do: dropping the stream ends the
 // *subscription*, not the agent's turn. The turn runs on the server side
 // independently of any subscriber. To actually stop work, post an interrupt with
-// [Client.Interrupt].
+// [Sessions.Interrupt].
 //
 // # Errors
 //

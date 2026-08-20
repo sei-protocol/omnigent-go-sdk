@@ -7,15 +7,19 @@ import (
 	"sync"
 )
 
-// TerminalTaskStatuses are the task statuses that mean no work is outstanding.
+// terminalTaskStatuses are the task statuses that mean no work is outstanding.
+//
+// Unexported and reached only through [IsTerminalTaskStatus]. An exported slice is
+// mutable by every importer, and one that appended to it would change what
+// [Sessions.SubtreeBusy] reports for every caller in the process.
+var terminalTaskStatuses = []string{"completed", "failed", "cancelled"}
+
+// IsTerminalTaskStatus reports whether a task status means the work has stopped.
 //
 // A status this build has never seen counts as non-terminal, which is the safe
 // direction: treating unknown work as finished reports a busy subtree as idle.
-var TerminalTaskStatuses = []string{"completed", "failed", "cancelled"}
-
-// IsTerminalTaskStatus reports whether a task status means the work has stopped.
 func IsTerminalTaskStatus(status string) bool {
-	return slices.Contains(TerminalTaskStatuses, status)
+	return slices.Contains(terminalTaskStatuses, status)
 }
 
 // ChildSessionBusy reports whether a child session has work outstanding.
@@ -195,7 +199,7 @@ func (s *Sessions) ChildrenTree(ctx context.Context, sessionID string, opts Tree
 		}
 
 		// One set per path, copied on descent. A path cannot race with itself, so
-		// which node owns a shared subtree no longer depends on which HTTP response
+		// which node owns a shared subtree does not depend on which HTTP response
 		// lands first. The cost is that a session reachable two ways is expanded
 		// twice, which MaxNodes bounds.
 		for _, child := range children {

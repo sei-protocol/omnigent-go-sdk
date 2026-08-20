@@ -5,20 +5,16 @@ import (
 	"strconv"
 )
 
-// Contracts this package states rather than mirrors.
-//
-// Every type here reaches a route the vendored description does not declare, so
-// the conformance tests cannot cover it in either direction. The events route is
-// registered include_in_schema=False, the create route takes a raw body and
-// dispatches on Content-Type, and the session file routes publish an empty
-// response schema. A server-side change to any of these breaks this client
-// silently, which is the cost of reaching them at all.
+// Every type in this file reaches a route the vendored description does not
+// declare, so no conformance test covers it in either direction. doc.go, under
+// "Hand-authored types", names each route and what that costs.
 
 // Discriminators for [SessionEventInput.Type]. The first names an item the
 // session records; the rest are control signals that queue no item.
 const (
 	// InputTypeMessage is a conversation turn. Its Data is a role plus content
-	// parts; build one with [UserMessage].
+	// parts. [Sessions.SendMessage] builds and posts one for the plain-text case;
+	// anything richer goes through [Sessions.PostEvent] directly.
 	InputTypeMessage = "message"
 
 	// InputTypeFunctionCallOutput returns the result of a tool the client ran.
@@ -36,8 +32,9 @@ const (
 	InputTypeCompact = "compact"
 
 	// InputTypeApproval answers an outstanding elicitation. Its Data is an
-	// elicitation_id plus the [ElicitationResult] fields; build one with
-	// [ApprovalVerdict], or send it with [Client.ResolveElicitation].
+	// elicitation_id plus the [ElicitationResult] fields.
+	// [Sessions.ResolveElicitation] is the route that takes them as arguments, and
+	// is what a caller answering an elicitation wants.
 	InputTypeApproval = "approval"
 )
 
@@ -235,7 +232,7 @@ type GetSessionOptions struct {
 	// newest 100 items and returns them chronologically, and nothing on the
 	// response separates a complete transcript from a truncated one, so a
 	// session that keeps working past 100 items silently loses its oldest.
-	// [Client.ListSessionItems] is the paged read that reaches them.
+	// [Sessions.ListItems] is the paged read that reaches them.
 	IncludeItems *bool
 
 	// IncludeLiveness, when false, skips the runner and host liveness lookup.

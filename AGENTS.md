@@ -32,8 +32,9 @@ door.
   Upstream moves more than once a day, and `openapi.json` moves independently of
   the Python client beside it.
 - Add a file to `NOTICE` when you copy an upstream schema or property description
-  into it. It names `types.go` and `event.go` today, and that list is
-  exhaustive by measurement, not by convention. Nothing checks it for you.
+  into it. `TestNoticeNamesEveryFileCarryingUpstreamProse` enforces the list in
+  both directions, so a file you forget fails the suite rather than shipping
+  unattributed. `NOTICE` is the list; do not restate it here.
 
 This module runs no code generator. Do not add one. The previous one decided the
 shape of the public surface, which is what this rebuild removes.

@@ -224,7 +224,7 @@ func TestSessionFileKeepsTheBodyItDecodedFrom(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if file.ID != "file_1" || file.Filename != "a.txt" {
+	if file.ID != "file_1" || file.Filename == nil || *file.Filename != "a.txt" {
 		t.Errorf("named fields lost: %+v", file)
 	}
 	if file.Raw == nil {

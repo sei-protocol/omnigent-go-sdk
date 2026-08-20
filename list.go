@@ -225,7 +225,7 @@ func (o ListSessionsOptions) query() url.Values {
 	return query
 }
 
-// SessionItem is one item from [Client.ListSessionItems].
+// SessionItem is one item from [Sessions.ListItems].
 //
 // It is untyped because the route sends the server's flatten-for-API shape
 // rather than the [ConversationItem] a snapshot carries: id, response_id, type
@@ -287,20 +287,6 @@ func setPageQuery(query url.Values, limit int, after, before string, order SortO
 		}
 	}
 }
-
-// ListAgents returns one page of the agents this caller may start a session
-// with, newest first unless [ListAgentsOptions.Order] says otherwise.
-//
-// The listing is not only the built-in agents, despite the route's name. It is
-// every agent not scoped to a single session, which covers the ones an operator
-// installed alongside the ones that ship with the server;
-// [AgentObject.Builtin] tells them apart. Agents created for one session are
-// never listed.
-//
-// This is the supported way to turn an agent name into the id
-// [SessionCreateRequest.AgentID] wants. There is no lookup-by-name route, so
-// that means paging until the name matches — worth caching, since an id is
-// stable and a listing is not free.
 
 // maxListingPages bounds one listing walk.
 //

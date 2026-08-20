@@ -52,17 +52,20 @@ type SessionFile struct {
 	// ID identifies the file, e.g. "file_abc123".
 	ID string `json:"id"`
 
-	// Filename is the name the file was uploaded under.
-	Filename string `json:"filename,omitempty"`
+	// Filename is the name the file was uploaded under. nil when the server did
+	// not report one.
+	Filename *string `json:"filename,omitempty"`
 
-	// Bytes is the file's size. Zero when the server does not report it.
-	Bytes int64 `json:"bytes,omitempty"`
+	// Bytes is the file's size. nil when the server did not report it, which a
+	// zero-length file does not.
+	Bytes *int64 `json:"bytes,omitempty"`
 
-	// CreatedAt is the Unix epoch second the file was created.
-	CreatedAt int64 `json:"created_at,omitempty"`
+	// CreatedAt is the Unix epoch second the file was created. nil when the server
+	// did not report it.
+	CreatedAt *int64 `json:"created_at,omitempty"`
 
 	// MimeType is the content type the server recorded, when it recorded one.
-	MimeType string `json:"mime_type,omitempty"`
+	MimeType *string `json:"mime_type,omitempty"`
 
 	// Raw is the response body this file decoded from, so a caller can reach a
 	// field this package does not name. The routes publish no schema, so the set

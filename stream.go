@@ -544,11 +544,10 @@ func decodeFrame(name, payload string) (Event, bool, error) {
 // skipNote appends the decode diagnosis to an ending that is not the sentinel.
 //
 // An interrupted ending and a total decode failure look identical to a caller:
-// nothing was delivered. Only the sentinel branch used to say which it was, and
-// the interrupted ending is the routine one, so the branch that fires most often
-// was the one that lost the reason. Without it a retyped field reads as a
-// transport fault, and the documented recovery — snapshot, resubscribe — skips
-// every frame again.
+// nothing was delivered. The interrupted ending is the routine one, so it is the
+// branch that most needs to say which happened. Without the note a retyped field
+// reads as a transport fault, and the documented recovery — snapshot,
+// resubscribe — skips every frame again.
 //
 // Empty when frames were delivered, because then the ending is about the
 // transport and not about decoding.

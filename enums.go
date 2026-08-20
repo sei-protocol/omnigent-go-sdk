@@ -1,11 +1,8 @@
 package omnigent
 
-// Values the description declares for the enumerated fields on this package's
-// types.
-//
-// The fields stay plain strings, so a value this build has never seen still
-// decodes. A switch over these constants therefore needs a default arm. doc.go
-// says the same under "Enumerated values".
+// The values the description declares for this package's enumerated fields. The
+// fields stay plain strings, so an unknown value still decodes and a switch needs
+// a default arm. doc.go, under "Enumerated values", has the reasoning.
 
 // The values ElicitationRequestParams.Mode carries.
 //

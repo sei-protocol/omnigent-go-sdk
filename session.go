@@ -152,7 +152,17 @@ func (s *Sessions) childPages(sessionID string) func(context.Context, string) (*
 	}
 }
 
-// ListAgents walks the registered agents.
+// ListAgents walks the registered agents, newest first unless
+// [ListAgentsOptions.Order] says otherwise.
+//
+// Not only the built-in agents, despite the route's name: it is every agent not
+// scoped to a single session, so an operator's installed agents arrive alongside
+// the ones that ship with the server. [AgentObject.Builtin] tells them apart, and
+// an agent created for one session is never listed.
+//
+// To turn a name into the id [SessionCreateRequest.AgentID] wants, use
+// [Sessions.ResolveAgent] — there is no lookup-by-name route, so it pages until
+// the name matches.
 //
 // The description types this listing's payload as heterogeneous, so the agent
 // shape here is a contract this package states rather than one the document
@@ -184,16 +194,16 @@ func errSeq[T any](err error) iter.Seq2[T, error] {
 	}
 }
 
-// Six of the session's state changes are one PATCH each, and every field already
-// exists on the update request. Naming them is the point: SetModelOverride states
-// an intent that a generic patch call does not, and the difference between
-// clearing an override and unbinding a runner is legible at the call site rather
-// than in the payload.
-
 // Update applies an arbitrary patch and returns the new snapshot.
 //
 // Prefer one of the named wrappers below. This is here for a field they do not
 // cover yet.
+//
+// Six of the session's state changes are one PATCH each, and every field already
+// exists on the update request, so the wrappers add no capability. Naming them is
+// the point: [Sessions.SetModelOverride] states an intent that a generic patch
+// call does not, and the difference between clearing an override and unbinding a
+// runner is legible at the call site rather than in the payload.
 func (s *Sessions) Update(ctx context.Context, sessionID string, req UpdateSessionRequest) (*SessionResponse, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("update session: %w: sessionID is required", ErrInvalidArgument)
@@ -212,11 +222,11 @@ func (s *Sessions) Update(ctx context.Context, sessionID string, req UpdateSessi
 // "default" for reasoning effort, so "default" is the one both accept.
 const clearOverrideAlias = "default"
 
-// There is no UnbindRunner. The description says only that a nil runner_id leaves
-// the binding unchanged; it defines no value that releases one. Add the method
-// when the description names the release, not before.
-
 // BindRunner binds the session to a runner.
+//
+// There is no UnbindRunner to pair with it. The description says only that a nil
+// runner_id leaves the binding unchanged; it defines no value that releases one.
+// Add the method when the description names the release, not before.
 func (s *Sessions) BindRunner(ctx context.Context, sessionID, runnerID string) (*SessionResponse, error) {
 	if runnerID == "" {
 		return nil, fmt.Errorf("bind runner: %w: runnerID is required", ErrInvalidArgument)
