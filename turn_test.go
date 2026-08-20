@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// The turn tracker's rules were established in the agentic driver, each by a
-// failure that reached a real run. These tests carry the same assertions, so the
-// driver can delete its copy and keep the guarantees.
+// These tests are the turn tracker's contract: each names a rule the tracker
+// holds and the consequence of it not holding.
 
 func statusEvent(status string, responseID *string, detail *ErrorDetail) SessionStatusEvent {
 	return SessionStatusEvent{
@@ -22,7 +21,7 @@ func statusEvent(status string, responseID *string, detail *ErrorDetail) Session
 
 func consumed(itemID string, pendingID *string) SessionInputConsumedEvent {
 	return SessionInputConsumedEvent{
-		Type: "session.input_consumed",
+		Type: "session.input.consumed",
 		Data: SessionInputConsumedPayload{ItemID: itemID, ClearedPendingID: pendingID},
 	}
 }

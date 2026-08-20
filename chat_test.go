@@ -113,8 +113,7 @@ func (s *chatServer) postedTypes() []string {
 //
 // An unknown type decodes to [UnknownEvent], which is the right behaviour for a
 // newer server and the wrong behaviour for a typo: the frame arrives, matches no
-// branch, and the test hangs waiting for a turn that can never end. One
-// mis-spelled discriminator cost exactly that.
+// branch, and the test hangs waiting for a turn that can never end.
 func assertKnownFrames(t *testing.T, frames []string) {
 	t.Helper()
 	for _, frame := range frames {

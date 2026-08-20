@@ -9,8 +9,10 @@ import "time"
 // wants; [BlockStream] folds those into this smaller set, so a caller writes a
 // switch over what it displays rather than over the wire protocol.
 //
-// Sealed by the same means as [Event]: [BlockContext] is the behaviour every block
-// carries, and an unexported marker keeps the variants this package's. That stops
+// Sealed like [Event], by a different mechanism: [Event]'s variants each declare
+// their own methods, while these embed one unexported struct that supplies both the
+// context and the marker. The effect is the same — an unexported method keeps the
+// variants this package's. That stops
 // an independent implementation, not a type embedding an exported variant, which
 // promotes the marker with everything else — so the seal is a strong convention
 // rather than a proof. Give a switch over the variants a default arm regardless:
@@ -35,9 +37,12 @@ type BlockContext struct {
 	// Depth is how deep that agent sits in the sub-agent tree. Zero is the root.
 	Depth int
 
-	// Turn counts iterations within one response. A tool loop that runs three times
-	// produces blocks at turns 0, 1 and 2.
-	Turn int
+	// Iteration counts tool-loop passes within the turn. A loop that runs three
+	// times produces blocks at iterations 0, 1 and 2.
+	//
+	// Named for the pass rather than the turn, because [Turn] is one prompt and
+	// everything it produces — a different thing, and one word cannot be both.
+	Iteration int
 
 	// At is when the block was made, from a monotonic clock, so a renderer can
 	// measure elapsed time without a wall-clock jump changing the answer.
@@ -46,12 +51,24 @@ type BlockContext struct {
 
 // blockCtx embeds into every variant, so each carries the context and satisfies
 // the seal without restating either.
+//
+// Its field is unexported. Exported, it was promoted to every variant — settable
+// from outside the package, so a caller could rewrite what [Block.Context] reports,
+// and marshalled as an untagged "Ctx" key into any transcript a caller persisted.
+// go doc showed neither, which is what made it a surface nobody chose.
 type blockCtx struct {
-	Ctx BlockContext
+	ctx BlockContext
 }
 
-func (b blockCtx) Context() BlockContext { return b.Ctx }
+func (b blockCtx) Context() BlockContext { return b.ctx }
 func (blockCtx) isBlock()                {}
+
+// blockAt stamps a context with the current time, and is how this package builds
+// every block. A caller reads a block; it does not construct one.
+func blockAt(ctx BlockContext) blockCtx {
+	ctx.At = time.Now()
+	return blockCtx{ctx: ctx}
+}
 
 // ResponseStartBlock reports that a response has begun.
 type ResponseStartBlock struct {
@@ -245,6 +262,10 @@ type ResponseEndBlock struct {
 	// Status is the terminal status, e.g. "completed" or "failed".
 	Status string
 
-	// Response is the full response snapshot, or nil when the server sent none.
+	// Response is the response snapshot the terminal event carried.
+	//
+	// A pointer because the struct is large, not because it is optional: the four
+	// terminal events declare it as a required value, so a block built from one
+	// always has it. Nil only on a block a caller constructed itself.
 	Response *ResponseObject
 }

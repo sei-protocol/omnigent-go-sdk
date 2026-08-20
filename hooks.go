@@ -24,9 +24,17 @@ type StreamHooks struct {
 	// OnToolCallEnd fires when that call's output arrives.
 	OnToolCallEnd func(ToolCallEndCtx)
 
-	// OnReasoningStart and OnReasoningEnd bracket a reasoning section.
+	// OnReasoningStart fires when the server reports reasoning beginning.
+	//
+	// There is deliberately no matching end hook. A section closes when text starts
+	// or the response ends, and its accumulated text lives in [BlockStream]'s fold;
+	// a second copy of that state here would drift from the first. Reasoning
+	// completion arrives on the block sequence as [ReasoningBlock] or the last
+	// [ReasoningChunk], which is where a caller that wants the text reads it.
+	//
+	// A caller driving a spinner keys the stop on the next block of another kind
+	// rather than on a hook that would have to guess the same thing.
 	OnReasoningStart func(ReasoningStartCtx)
-	OnReasoningEnd   func(ReasoningEndCtx)
 
 	// OnRetry fires when the server reports it is retrying.
 	OnRetry func(RetryCtx)
@@ -40,10 +48,12 @@ type StreamHooks struct {
 
 	// OnElicitation decides an approval request the server raised.
 	//
-	// Return true to accept and false to decline. A nil hook declines, which is
-	// this package's own default and not a policy: the SDK cannot know what a
-	// caller would approve, and approving on a caller's behalf runs a tool under
-	// their identity. See [ElicitationCtx].
+	// Return true to accept and false to decline. A nil hook declines, and so does
+	// a hook that panics. That is this package's own behaviour and not a policy: it
+	// cannot know what a caller would approve, and accepting authorises the pending
+	// tool to run with the session owner's execution identity — which is not
+	// necessarily the approver's. See [ElicitationAccept] for what the server
+	// requires of an accept, and [ElicitationCtx] for what the request carries.
 	OnElicitation func(ElicitationCtx) bool
 }
 
@@ -84,13 +94,6 @@ type ToolCallEndCtx struct {
 // ReasoningStartCtx describes a reasoning section beginning.
 type ReasoningStartCtx struct {
 	ResponseID string
-}
-
-// ReasoningEndCtx describes a reasoning section ending.
-type ReasoningEndCtx struct {
-	ResponseID string
-	Text       string
-	Summary    string
 }
 
 // RetryCtx describes a retry the server reported.

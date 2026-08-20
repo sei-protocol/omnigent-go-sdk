@@ -119,7 +119,7 @@ func TestOnlyAgentKeepsOneAgentAndEmptyKeepsAll(t *testing.T) {
 	t.Parallel()
 
 	from := func(agent, text string) Block {
-		return TextChunk{blockCtx: blockCtx{Ctx: BlockContext{Agent: agent}}, Text: text}
+		return TextChunk{blockCtx: blockAt(BlockContext{Agent: agent}), Text: text}
 	}
 	seq := func() iter.Seq2[Block, error] {
 		return blockSeq(from("", "root"), from("sub", "child"), from("", "root2"))
@@ -175,13 +175,13 @@ func TestSkipIntermediateEndsEmitsNothingExtraWhenThereIsNoEnd(t *testing.T) {
 func TestMergeTextAcrossIterationsReportsOneAnswer(t *testing.T) {
 	t.Parallel()
 
-	ctx := BlockContext{Agent: "coder", Turn: 2}
+	ctx := BlockContext{Agent: "coder", Iteration: 2}
 	blocks, _ := collectBlocks(t, MergeTextAcrossIterations()(blockSeq(
 		TextChunk{Text: "one "},
 		TextDone{FullText: "one "},
 		ToolGroup{Iteration: 1},
-		TextDone{blockCtx: blockCtx{Ctx: ctx}, FullText: "two"},
-		ResponseEndBlock{blockCtx: blockCtx{Ctx: ctx}, Status: "completed"},
+		TextDone{blockCtx: blockAt(ctx), FullText: "two"},
+		ResponseEndBlock{blockCtx: blockAt(ctx), Status: "completed"},
 	)))
 	if got := names(blocks); got != "omnigent.TextChunk,omnigent.ToolGroup,omnigent.TextDone,omnigent.ResponseEndBlock" {
 		t.Fatalf("got %s", got)
@@ -200,9 +200,9 @@ func TestMergeTextAcrossIterationsReportsOneAnswer(t *testing.T) {
 func TestMergeTextAcrossIterationsFlushesADroppedStream(t *testing.T) {
 	t.Parallel()
 
-	ctx := BlockContext{Agent: "coder", Turn: 3}
+	ctx := BlockContext{Agent: "coder", Iteration: 3}
 	blocks, _ := collectBlocks(t, MergeTextAcrossIterations()(blockSeq(
-		TextDone{blockCtx: blockCtx{Ctx: ctx}, FullText: "partial answer"},
+		TextDone{blockCtx: blockAt(ctx), FullText: "partial answer"},
 	)))
 	if len(blocks) != 1 {
 		t.Fatalf("got %d blocks, want the flushed TextDone", len(blocks))
@@ -213,7 +213,7 @@ func TestMergeTextAcrossIterationsFlushesADroppedStream(t *testing.T) {
 	}
 	// No terminal response arrived, so the context can only come from the text the
 	// transform accumulated.
-	if flushed.Context().Agent != "coder" || flushed.Context().Turn != 3 {
+	if flushed.Context().Agent != "coder" || flushed.Context().Iteration != 3 {
 		t.Errorf("the flushed block lost its context: %+v", flushed.Context())
 	}
 }
@@ -227,5 +227,48 @@ func TestMergeTextAcrossIterationsMarksCodeBlocks(t *testing.T) {
 	)))
 	if !blocks[0].(TextDone).HasCodeBlocks {
 		t.Error("a fenced block was not reported")
+	}
+}
+
+// TestMergeTextNeedsTheEndsFoldedFirst pins the composition its doc now names.
+//
+// The transform flushes at every ResponseEndBlock, so a sequence carrying one end
+// per tool-loop iteration yields one answer per iteration. The earlier test for this
+// used a fixture with a single end — the shape a stream has only after
+// SkipIntermediateEnds has run — so it could not see the difference.
+func TestMergeTextNeedsTheEndsFoldedFirst(t *testing.T) {
+	t.Parallel()
+
+	twoIterations := func() iter.Seq2[Block, error] {
+		return blockSeq(
+			TextDone{FullText: "one "},
+			ResponseEndBlock{Status: "completed"},
+			ToolGroup{Iteration: 1},
+			TextDone{FullText: "two"},
+			ResponseEndBlock{Status: "completed"},
+		)
+	}
+
+	alone, _ := collectBlocks(t, MergeTextAcrossIterations()(twoIterations()))
+	var answers []string
+	for _, b := range alone {
+		if done, ok := b.(TextDone); ok {
+			answers = append(answers, done.FullText)
+		}
+	}
+	if len(answers) != 2 {
+		t.Errorf("alone: got %d answers %v, want one per iteration", len(answers), answers)
+	}
+
+	composed, _ := collectBlocks(t, Pipe(twoIterations(),
+		SkipIntermediateEnds(), MergeTextAcrossIterations()))
+	answers = nil
+	for _, b := range composed {
+		if done, ok := b.(TextDone); ok {
+			answers = append(answers, done.FullText)
+		}
+	}
+	if len(answers) != 1 || answers[0] != "one two" {
+		t.Errorf("composed: got %v, want one merged answer", answers)
 	}
 }

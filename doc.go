@@ -104,11 +104,12 @@
 // A turn is one prompt and the events it produces. [Chat.Send] drives one: it
 // subscribes, posts the prompt, and reads until the turn ends.
 //
-// The order matters and is not an implementation detail. The subscription has to
-// exist before the prompt is posted, or the turn can be answered with nobody
-// listening and its events are simply missed. A [Turn] from [Chat.Prompt] is
-// single-use for the same reason a second post is not free: it would be a second
-// turn the caller did not ask for, and the server would answer both.
+// The prompt is posted from [StreamOptions.OnSubscribed], so the subscription
+// always exists first and the turn cannot be answered with nobody listening. Two
+// consequences a caller can rely on: a stream that fails to open posts nothing, and
+// a [Turn] nobody reads posts nothing. A Turn is single-use for the same reason a
+// second post is not free — it would be a second turn the caller did not ask for,
+// and the server would answer both.
 //
 // Two things run inside the loop, before the turn's end is read, because the server
 // parks a turn on each of them and the terminal event only follows once they are
@@ -117,23 +118,35 @@
 // than leaving the turn parked, and an approval with no decision is declined.
 //
 // Declining is this package's own behaviour and not a policy. It cannot know what a
-// caller would approve, and approving would run a tool under their identity. A
-// caller with a policy supplies [StreamHooks.OnElicitation].
+// caller would approve, and accepting authorises the pending tool to run with the
+// session owner's execution identity — not the approver's. A caller with a policy
+// supplies [StreamHooks.OnElicitation]; a hook that panics also declines.
+//
+// One obligation is the caller's. A session that may have a response still running
+// needs [TurnOptions.PriorResponseIDs], the responses already on it when the prompt
+// goes out. Without them a response that predates this turn can end this read, and
+// the caller gets another turn's ending. Give [Chat.Send] a context with a deadline
+// too: [TurnEndsOnIdleStatus] waits for an edge that a mismatched harness never
+// sends, and the stream's heartbeat means no timeout of this package's fires.
 //
 // # What upstream has and this package does not
 //
-// The Python client's public surface is the reference for this one, and three of
-// its symbols are deliberately absent rather than pending.
+// The Python client's public surface is the reference for this one, and two of its
+// symbols are deliberately absent rather than pending. specs/002-upstream-alignment
+// carries the full mapping; this section states only what will not be built.
+//
+// Not listed here, and not yet built: upstream's QueryResult and QueryStream fold a
+// turn into its text and files. A caller composes that today from [BlockStream] and
+// [MergeTextAcrossIterations].
 //
 // LocalServer starts a server process and waits for it to listen. Managing a
 // server's lifecycle is not a client's job in Go, where a caller already has
 // os/exec and a health check, and a helper that owned a subprocess would own its
 // signals and its logs too.
 //
-// QueryResult and QueryStream are the one-shot Responses surface, which threads
-// previous_response_id across calls instead of using a durable session. This
-// package reaches the Sessions API, where the session holds that thread. A caller
-// wanting one-shot semantics creates a session and does not reuse it.
+// tool is a decorator the server's runtime consumes to load tools inside an agent
+// image. A Go caller registers the client half with [ToolRegistry], which is the
+// part that runs in this process.
 //
 // # Timeouts
 //

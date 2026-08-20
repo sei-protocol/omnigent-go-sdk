@@ -136,11 +136,7 @@ func (s *blockState) emit(block Block, err error) bool {
 func (s *blockState) put(block Block) { s.emit(block, nil) }
 
 // at stamps the current context with a fresh timestamp.
-func (s *blockState) at() blockCtx {
-	ctx := s.ctx
-	ctx.At = time.Now()
-	return blockCtx{Ctx: ctx}
-}
+func (s *blockState) at() blockCtx { return blockAt(s.ctx) }
 
 // fold routes one event to the step that handles it.
 //
@@ -209,6 +205,11 @@ func (s *blockState) startResponse(response ResponseObject) {
 		return
 	}
 	s.startedResponses[response.ID] = true
+	// The agent and its depth come from the response's model, which is the only
+	// place the wire names them. Without this every block reports the root agent,
+	// and [OnlyAgent] matches nothing a real stream produces.
+	s.ctx.Agent = response.Model
+	s.ctx.Depth = strings.Count(response.Model, ".")
 	s.put(ResponseStartBlock{blockCtx: s.at(), Model: response.Model, ResponseID: response.ID})
 }
 
@@ -219,10 +220,9 @@ func (s *blockState) startResponse(response ResponseObject) {
 func (s *blockState) endResponse(status string, response *ResponseObject) {
 	s.closeText()
 	s.closeReasoning()
-	s.flushPendingResults()
 	s.put(ResponseEndBlock{blockCtx: s.at(), Status: status, Response: response})
 	// The next terminal response is a new tool-loop iteration.
-	s.ctx.Turn++
+	s.ctx.Iteration++
 }
 
 func (s *blockState) beginReasoning() {
@@ -302,7 +302,6 @@ func (s *blockState) appendText(delta string) {
 		return
 	}
 	s.closeReasoning()
-	s.flushPendingResults()
 	s.inText += delta
 	s.fullText += delta
 	s.flushTextChunks()
@@ -343,30 +342,6 @@ func (s *blockState) closeText() {
 		HasCodeBlocks: strings.Contains(s.fullText, "```"),
 	})
 	s.fullText = ""
-}
-
-// flushPendingResults reports any tool call whose output has arrived.
-//
-// Called when text starts and when a response ends, which are the two points a
-// caller is about to render something else and a finished tool should already be
-// on screen.
-func (s *blockState) flushPendingResults() {
-	for id, execution := range s.pending {
-		if execution.Output == nil || s.seenResults[id] {
-			continue
-		}
-		s.seenResults[id] = true
-		s.put(ToolResultBlock{
-			blockCtx:    s.at(),
-			Name:        execution.Name,
-			CallID:      id,
-			AgentName:   execution.AgentName,
-			Output:      *execution.Output,
-			Arguments:   execution.Arguments,
-			ArgsSummary: execution.ArgsSummary,
-		})
-		delete(s.pending, id)
-	}
 }
 
 // foldItem routes one finished output item.
@@ -422,7 +397,7 @@ func (s *blockState) foldToolCall(item map[string]any) {
 	s.put(ToolGroup{
 		blockCtx:   s.at(),
 		Executions: []ToolExecution{*execution},
-		Iteration:  s.ctx.Turn,
+		Iteration:  s.ctx.Iteration,
 	})
 }
 

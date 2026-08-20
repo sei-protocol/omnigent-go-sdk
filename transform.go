@@ -162,12 +162,18 @@ func SkipIntermediateEnds() Transform {
 	}
 }
 
-// MergeTextAcrossIterations reports one [TextDone] per response rather than one
-// per tool-loop iteration.
+// MergeTextAcrossIterations joins the [TextDone] blocks between terminal responses
+// into one.
 //
-// Each iteration finishes its own text section, so a caller rendering a finished
-// transcript otherwise draws the answer in as many pieces as the loop ran.
-// [TextChunk] passes through untouched, so live rendering is unaffected.
+// It flushes at each [ResponseEndBlock], so on a sequence carrying one end per
+// tool-loop iteration it reports one answer per iteration — which is what
+// [SkipIntermediateEnds] is for. Compose them in that order to get a single answer:
+//
+//	Pipe(seq, SkipIntermediateEnds(), MergeTextAcrossIterations())
+//
+// [TextChunk] passes through untouched, so live rendering is unaffected. A sequence
+// that ends with no terminal response still reports what it gathered, using the
+// context of the text rather than of an end that never came.
 func MergeTextAcrossIterations() Transform {
 	return func(seq iter.Seq2[Block, error]) iter.Seq2[Block, error] {
 		return func(yield func(Block, error) bool) {
@@ -181,7 +187,7 @@ func MergeTextAcrossIterations() Transform {
 				text := accumulated.String()
 				accumulated.Reset()
 				return yield(TextDone{
-					blockCtx:      blockCtx{Ctx: at},
+					blockCtx:      blockAt(at),
 					FullText:      text,
 					HasCodeBlocks: strings.Contains(text, "```"),
 				}, nil)
@@ -196,8 +202,9 @@ func MergeTextAcrossIterations() Transform {
 				}
 				switch typed := block.(type) {
 				case TextDone:
-					// Held rather than yielded, and its context kept, so the merged
-					// block reports the agent and turn its text came from.
+					// Held rather than yielded. Its context is kept for the case
+					// where no terminal response arrives, which is the only path
+					// that has no better one to use.
 					accumulated.WriteString(typed.FullText)
 					ctx = typed.Context()
 				case ResponseEndBlock:

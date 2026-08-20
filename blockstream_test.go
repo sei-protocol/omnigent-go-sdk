@@ -372,3 +372,88 @@ func TestFormatToolArgsBriefIsStableAndBounded(t *testing.T) {
 		t.Errorf("truncation produced invalid UTF-8: %q", long)
 	}
 }
+
+// TestBlocksCarryTheAgentTheyCameFrom pins the context the fold writes.
+//
+// Nothing wrote Agent or Depth before, so every block reported the root agent and
+// OnlyAgent matched nothing a real stream produced. Driven through the fold rather
+// than through a constructed block, because the previous test for this used an
+// in-package literal no caller — and no production path — can write.
+func TestBlocksCarryTheAgentTheyCameFrom(t *testing.T) {
+	t.Parallel()
+
+	blocks := foldBlocks(t, 0,
+		`{"type":"response.created","response":{"id":"r1","model":"coder.researcher","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","delta":"found it"}`,
+		`{"type":"response.completed","response":{"id":"r1","model":"coder.researcher","status":"completed"}}`,
+	)
+	if len(blocks) == 0 {
+		t.Fatal("no blocks")
+	}
+	for _, block := range blocks {
+		ctx := block.Context()
+		if ctx.Agent != "coder.researcher" {
+			t.Errorf("%T reports agent %q, want coder.researcher", block, ctx.Agent)
+		}
+		if ctx.Depth != 1 {
+			t.Errorf("%T reports depth %d, want 1 for a dotted agent", block, ctx.Depth)
+		}
+	}
+}
+
+// TestOnlyAgentFiltersARealFold pins the transform against data the fold produces.
+//
+// Its own test passed on a synthetic block, so the transform could be — and was —
+// dead against every real stream while looking covered.
+func TestOnlyAgentFiltersARealFold(t *testing.T) {
+	t.Parallel()
+
+	stream := &BlockStream{}
+	events := eventsFrom(t,
+		`{"type":"response.created","response":{"id":"r1","model":"coder.researcher","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","delta":"from the sub-agent"}`,
+		`{"type":"response.completed","response":{"id":"r1","model":"coder.researcher","status":"completed"}}`,
+	)
+
+	kept := 0
+	for block, err := range Pipe(stream.Blocks(events), OnlyAgent("coder.researcher")) {
+		if err != nil {
+			t.Fatalf("Blocks: %v", err)
+		}
+		kept++
+		_ = block
+	}
+	if kept == 0 {
+		t.Fatal("OnlyAgent dropped every block of the agent it names")
+	}
+
+	// And it still excludes another agent.
+	other := 0
+	for range Pipe(stream.Blocks(eventsFrom(t,
+		`{"type":"response.created","response":{"id":"r1","model":"coder.researcher","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","delta":"x"}`,
+	)), OnlyAgent("someone.else")) {
+		other++
+	}
+	if other != 0 {
+		t.Errorf("OnlyAgent kept %d blocks from another agent", other)
+	}
+}
+
+// TestABlockCannotBeRewrittenFromOutside pins that Context reports what the fold
+// recorded.
+//
+// The embedded struct's field was exported, so it was promoted to every variant and
+// settable by any caller, and marshalled as an untagged "Ctx" key. This asserts the
+// only remaining path is the accessor.
+func TestABlockCannotBeRewrittenFromOutside(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(TextChunk{Text: "hi"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "Ctx") {
+		t.Errorf("a block marshals an untagged context key: %s", encoded)
+	}
+}
