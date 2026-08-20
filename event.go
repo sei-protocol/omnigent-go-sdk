@@ -811,7 +811,7 @@ type SessionMcpStartupEvent struct {
 	// Category: **transient** (SSE + snapshot cache). Not persisted; a client connecting mid-
 	// startup seeds from the session snapshot's mcp_startup field and updates live off this
 	// event.
-	Servers map[string]any `json:"servers"`
+	Servers map[string]MCPServerStartup `json:"servers"`
 
 	// Type is always "session.mcp_startup".
 	Type string `json:"type"`
@@ -1109,7 +1109,7 @@ type SessionUsageEvent struct {
 	// model id, e.g. {"claude-sonnet-4-6": ModelUsage(input_tokens=12000, ...)}. None
 	// (stripped by exclude_none) on a broadcast that carries no per-model change, so the
 	// client keeps its cached map. Category: **transient** (SSE-only).
-	UsageByModel map[string]any `json:"usage_by_model,omitempty"`
+	UsageByModel map[string]ModelUsage `json:"usage_by_model,omitempty"`
 }
 
 func (SessionUsageEvent) isEvent() {}

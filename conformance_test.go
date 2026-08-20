@@ -143,7 +143,10 @@ func mirroredTypes(t *testing.T) map[string]reflect.Type {
 
 	var walk func(reflect.Type)
 	walk = func(rt reflect.Type) {
-		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice {
+		// Map is here because a schema's additionalProperties can be a $ref, so a
+		// type is sometimes reachable only as a map's value. Omitting it left two
+		// mapped types unchecked.
+		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Map {
 			rt = rt.Elem()
 		}
 		if rt.Kind() != reflect.Struct || rt.PkgPath() == "" {
