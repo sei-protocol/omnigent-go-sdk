@@ -29,6 +29,12 @@ type chatServer struct {
 	// prompt — which is how a turn that depends on the prompt is modelled.
 	afterPost []string
 
+	// doneAfterScript ends the stream cleanly, with its terminal sentinel, when the
+	// script runs out. That is the only way to reach the path where the stream ends
+	// before the turn does: closing the socket instead is a transport failure, which
+	// the turn loop reports before it gets there.
+	doneAfterScript bool
+
 	posted chan struct{}
 }
 
@@ -70,6 +76,11 @@ func (s *chatServer) serveStream(w http.ResponseWriter, r *http.Request) {
 	for _, frame := range append(s.script, s.afterPost...) {
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
 		flusher.Flush()
+	}
+	if s.doneAfterScript {
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+		return
 	}
 	<-r.Context().Done()
 }
@@ -813,5 +824,147 @@ func TestAPanicInAnyHookIsReportedAndTheTurnContinues(t *testing.T) {
 	// The tool still ran and its output still went back, so the session is not parked.
 	if got := server.postedTypes(); len(got) != 2 {
 		t.Errorf("posted %v, want the prompt and the tool output", got)
+	}
+}
+
+// TestAStreamThatEndsEarlyIsReportedNotSwallowed pins ErrTurnIncomplete end to end.
+//
+// A stream can end before the turn does — a deployment that caps stream duration, or
+// a relay that drops the connection. Reported, because a caller reading the sequence
+// as complete takes a partial answer for the whole one.
+func TestAStreamThatEndsEarlyIsReportedNotSwallowed(t *testing.T) {
+	t.Parallel()
+
+	server, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.created","response":{"id":"r1","model":"coder","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","delta":"half an answer"}`,
+	})
+	server.doneAfterScript = true
+
+	chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var got error
+	for _, err := range chat.Send(ctx, "hi") {
+		if err != nil {
+			got = err
+		}
+	}
+	if !errors.Is(got, ErrTurnIncomplete) {
+		t.Fatalf("got %v, want ErrTurnIncomplete", got)
+	}
+}
+
+// TestATurnEndsOnAnIdleEdgeThroughSend pins the idle-status rule through the public
+// entry point, and with it the session filter at its only production call site.
+//
+// Every other end-to-end test uses the lifecycle rule, which never reaches
+// observeStatus — so mis-wiring the tracker's session id changed nothing they saw.
+func TestATurnEndsOnAnIdleEdgeThroughSend(t *testing.T) {
+	t.Parallel()
+
+	_, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.created","response":{"id":"r1","model":"coder","status":"in_progress"}}`,
+		`{"type":"response.output_text.delta","delta":"the answer"}`,
+		`{"type":"response.completed","response":{"id":"r1","model":"coder","status":"completed"}}`,
+		`{"type":"session.status","conversation_id":"conv_1","status":"idle","response_id":"r1"}`,
+	})
+	chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnIdleStatus}})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var last string
+	var got error
+	for event, err := range chat.Send(ctx, "hi") {
+		if err != nil {
+			got = err
+			continue
+		}
+		last = event.EventType()
+	}
+	if got != nil {
+		t.Fatalf("Send: %v", got)
+	}
+	if last != "session.status" {
+		t.Errorf("the turn ended on %s, want the idle status edge", last)
+	}
+}
+
+// TestAFailingToolReachesTheCaller pins that a tool's failure is reported, not only
+// posted to the server. It is the caller's own code failing.
+func TestAFailingToolReachesTheCaller(t *testing.T) {
+	t.Parallel()
+
+	_, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.output_item.done","item":{"type":"function_call",` +
+			`"status":"action_required","call_id":"c1","name":"Boom","agent_name":"coder"}}`,
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	})
+	tools := NewToolRegistry()
+	if err := tools.Register("Boom", nil, func(context.Context, ToolCallInfo) (string, error) {
+		return "", errors.New("disk full")
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var reported error
+	for _, err := range chat.Send(ctx, "hi") {
+		if errors.Is(err, ErrToolFailed) {
+			reported = err
+		}
+	}
+	if reported == nil {
+		t.Fatal("the tool's failure never reached the caller")
+	}
+	if !strings.Contains(reported.Error(), "disk full") {
+		t.Errorf("the tool's own reason was dropped: %v", reported)
+	}
+}
+
+// TestAServerRunToolIsNeverDispatched pins the one field separating a call to run
+// from a call to display, across every value that is not action_required.
+func TestAServerRunToolIsNeverDispatched(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"completed", "in_progress", ""} {
+		t.Run("status="+status, func(t *testing.T) {
+			server, client := newChatServer(t, nil, []string{
+				echoFrame,
+				`{"type":"response.output_item.done","item":{"type":"function_call",` +
+					`"status":"` + status + `","call_id":"c1","name":"Deploy","agent_name":"coder"}}`,
+				`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+			})
+			tools := NewToolRegistry()
+			var ran atomic.Int64
+			if err := tools.Register("Deploy", nil, func(context.Context, ToolCallInfo) (string, error) {
+				ran.Add(1)
+				return "deployed", nil
+			}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			chat, _ := client.Chat("conv_1", ChatOptions{
+				Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			for range chat.Send(ctx, "hi") {
+			}
+
+			if ran.Load() != 0 {
+				t.Errorf("a call with status %q ran %d times", status, ran.Load())
+			}
+			if got := server.postedTypes(); len(got) != 1 {
+				t.Errorf("posted %v, want only the prompt", got)
+			}
+		})
 	}
 }

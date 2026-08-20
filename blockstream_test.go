@@ -486,3 +486,48 @@ func TestAShortAnswerStillStreams(t *testing.T) {
 		t.Errorf("a short answer produced no TextDone: %s", kindsOf(blocks))
 	}
 }
+
+// TestAttributionStopsRatherThanGuessingWhenResponsesInterleave pins the direction
+// this fails in.
+//
+// A text delta names no response, so the fold can only credit it to whichever
+// response started last. That is right while one is live and wrong the moment two
+// are: a mirrored sub-agent's start would otherwise re-credit the parent's own words
+// to the child, and OnlyAgent would drop the parent's answer rather than merely fail
+// to find it. Crediting nothing is recoverable; crediting wrongly is not.
+func TestAttributionStopsRatherThanGuessingWhenResponsesInterleave(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one response at a time credits every block", func(t *testing.T) {
+		blocks := foldBlocks(t, 0,
+			`{"type":"response.created","response":{"id":"r1","model":"coder.researcher","status":"in_progress"}}`,
+			`{"type":"response.output_text.delta","delta":"found it"}`,
+			`{"type":"response.completed","response":{"id":"r1","model":"coder.researcher","status":"completed"}}`,
+		)
+		for _, block := range blocks {
+			if got := block.Context().Agent; got != "coder.researcher" {
+				t.Errorf("%T reports agent %q", block, got)
+			}
+		}
+	})
+
+	t.Run("two live responses credit nothing", func(t *testing.T) {
+		blocks := foldBlocks(t, 0,
+			`{"type":"response.created","response":{"id":"parent","model":"coder","status":"in_progress"}}`,
+			`{"type":"response.output_text.delta","delta":"PARENT-1 "}`,
+			`{"type":"response.created","response":{"id":"child","model":"coder.researcher","status":"in_progress"}}`,
+			`{"type":"response.output_text.delta","delta":"CHILD-1 "}`,
+			`{"type":"response.output_item.done","item":{"type":"message","content":`+
+				`[{"type":"output_text","text":"mixed"}]}}`,
+		)
+		for _, block := range blocks {
+			if _, isStart := block.(ResponseStartBlock); isStart {
+				// A start block names its own response, so it keeps its model.
+				continue
+			}
+			if got := block.Context().Agent; got != "" {
+				t.Errorf("%T credited agent %q while two responses were live", block, got)
+			}
+		}
+	})
+}
