@@ -747,3 +747,88 @@ func schemaNames(t *testing.T) map[string]bool {
 	}
 	return names
 }
+
+// TestNoEventTargetCarriesAMethod pins the invariant the event union's shape
+// depends on and nothing else states.
+//
+// An event variant is a defined type over its generated counterpart, not an
+// alias, because Go refuses a method on another package's type and each variant
+// carries [Event]'s two methods. A defined type does not inherit the underlying
+// type's method set. That costs nothing while no generated event type has a
+// method, which is true today and is not a property of the document.
+//
+// Give an event schema `additionalProperties` upstream and the generator emits
+// an UnmarshalJSON for it. The defined type would not call it, [DecodeEvent]
+// would drop the properties it collects, and no field-level check would notice,
+// because the fields still match. So assert the premise rather than the effect.
+func TestNoEventTargetCarriesAMethod(t *testing.T) {
+	t.Parallel()
+
+	const generated = "internal/api/api.gen.go"
+	file, err := parser.ParseFile(token.NewFileSet(), generated, nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile %s: %v", generated, err)
+	}
+
+	withMethods := map[string]bool{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		recv := fn.Recv.List[0].Type
+		if star, ok := recv.(*ast.StarExpr); ok {
+			recv = star.X
+		}
+		if id, ok := recv.(*ast.Ident); ok {
+			withMethods[id.Name] = true
+		}
+	}
+
+	// The event variants, and the api type each is defined over.
+	targets := definedEventTargets(t)
+	if len(targets) < 40 {
+		t.Fatalf("found only %d event variants defined over api; the scan is broken", len(targets))
+	}
+	for local, target := range targets {
+		if withMethods[target] {
+			t.Errorf("%s is a defined type over api.%s, which now carries a method that "+
+				"%s does not inherit; make it an alias, or move the behaviour into the facade",
+				local, target, local)
+		}
+	}
+}
+
+// definedEventTargets returns each event variant declared as `type X api.Y`,
+// mapped to Y. An alias is excluded: it shares the method set, so the invariant
+// above does not apply to it.
+func definedEventTargets(t *testing.T) map[string]string {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "event.go", nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile event.go: %v", err)
+	}
+
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Assign.IsValid() {
+				continue // Assign set means `=`, an alias.
+			}
+			sel, ok := ts.Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "api" {
+				out[ts.Name.Name] = sel.Sel.Name
+			}
+		}
+	}
+	return out
+}
