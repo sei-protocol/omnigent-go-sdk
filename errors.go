@@ -222,6 +222,10 @@ const maxRequestIDRunes = 80
 // and this caps each entry.
 const maxAgentNameRunes = 60
 
+// maxToolNameRunes bounds a tool name inside an error. The name comes from the
+// model by way of the server, so its length is not the caller's choice.
+const maxToolNameRunes = 60
+
 // Error is the interface every server-response error in this package satisfies.
 //
 // It exists so a caller can branch on the status without naming a concrete type:

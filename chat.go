@@ -2,11 +2,9 @@ package omnigent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"sync"
-	"time"
 )
 
 // Chat drives one session's turns.
@@ -47,6 +45,13 @@ type ChatOptions struct {
 func (c *Client) Chat(sessionID string, opts ChatOptions) (*Chat, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("chat: %w: sessionID is required", ErrInvalidArgument)
+	}
+	if opts.Stream.OnSubscribed != nil {
+		// A Chat posts its prompt from that hook, so a second one there would post
+		// a second prompt for one turn and the server would answer both. Refused
+		// rather than overridden: a caller who set it meant it to run.
+		return nil, fmt.Errorf("chat: %w: ChatOptions.Stream.OnSubscribed is reserved, "+
+			"because a turn posts its prompt there", ErrInvalidArgument)
 	}
 	return &Chat{client: c, sessionID: sessionID, opts: opts}, nil
 }
@@ -95,7 +100,7 @@ func (c *Chat) Send(ctx context.Context, text string) iter.Seq2[Event, error] {
 func (t *Turn) Events(ctx context.Context) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		if !t.claim() {
-			yield(nil, fmt.Errorf("%w", ErrTurnAlreadyRead))
+			yield(nil, fmt.Errorf("read turn on session %s: %w", t.chat.sessionID, ErrTurnAlreadyRead))
 			return
 		}
 		t.chat.drive(ctx, t.text, yield)
@@ -115,142 +120,135 @@ func (t *Turn) claim() bool {
 
 // drive runs the turn loop and reports each event to the caller.
 //
-// The order is what makes the read complete. The subscription has to exist before
-// the prompt is posted, or the turn can be answered with nobody listening and its
-// events are simply missed. [Client.Stream] returns a lazy sequence, so the
-// subscription opens when this loop starts reading — which is why the prompt is
-// posted from inside the loop rather than before it.
+// The prompt is posted from [StreamOptions.OnSubscribed], which is this package's
+// supported way to start a turn, and the reason is timing: the hook runs once the
+// subscription is live and before the first event reaches the caller. So the turn
+// cannot be answered with nobody listening, and the anchor is recorded before any
+// event can be tested against it.
 //
-// The first event is the signal that the subscription is live: the server emits a
-// heartbeat once the relay has registered the reader. A server that emits none
-// would leave the prompt unsent, so a short wait bounds that.
+// Three properties follow from posting there rather than from a goroutine of our
+// own. A stream that fails to open never runs the hook, so nothing is posted for a
+// turn that never started. A caller who abandons the sequence before reading never
+// runs it either, which is what makes [Chat.Prompt]'s promise true. And there is no
+// readiness left to guess at: the acknowledgement frame is byte-identical to a
+// keepalive, so no amount of event inspection could have recognised it.
 func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) bool) {
-	tracker := newTurnTracker(c.opts.Turn)
-
-	ready := make(chan struct{})
-	anchors := make(chan anchorResult, 1)
-	var readyOnce sync.Once
-	markReady := func() { readyOnce.Do(func() { close(ready) }) }
-
-	// Posts once the subscription is live, so the loop below keeps reading while
-	// the post is in flight.
-	go func() {
-		select {
-		case <-ready:
-		case <-time.After(streamReadyTimeout):
-			// An older server sends no heartbeat. Posting anyway beats hanging, and
-			// the window this opens is the one upstream accepts for the same reason.
-		case <-ctx.Done():
-			anchors <- anchorResult{err: ctx.Err()}
-			return
-		}
-		accepted, err := c.client.Sessions().SendMessage(ctx, c.sessionID, text)
-		anchors <- anchorResult{anchor: anchorOf(accepted), err: err}
-	}()
-
-	anchored := false
-	// takeAnchor picks up the post's result. Blocking is safe only once an echo has
-	// arrived, because an echo cannot precede the post that produced it.
-	takeAnchor := func(wait bool) bool {
-		if anchored {
-			return true
-		}
-		var result anchorResult
-		if wait {
-			select {
-			case result = <-anchors:
-			case <-ctx.Done():
-				yield(nil, ctx.Err())
-				return false
-			}
-		} else {
-			select {
-			case result = <-anchors:
-			default:
-				return true
-			}
-		}
-		anchored = true
-		if result.err != nil {
-			yield(nil, fmt.Errorf("send prompt: %w", result.err))
-			return false
-		}
-		tracker.anchorOn(result.anchor)
-		return true
+	run := &turnRun{
+		chat:       c,
+		tracker:    newTurnTracker(c.opts.Turn),
+		dispatched: map[string]bool{},
+		yield:      yield,
 	}
 
-	for event, err := range c.client.Stream(ctx, c.sessionID, c.opts.Stream) {
-		markReady()
+	opts := c.opts.Stream
+	opts.OnSubscribed = func(ctx context.Context, sub Subscription) error {
+		accepted, err := c.client.Sessions().SendMessage(ctx, sub.SessionID, text)
 		if err != nil {
-			yield(nil, err)
+			return fmt.Errorf("send prompt: %w", err)
+		}
+		run.tracker.anchorOn(anchorOf(accepted))
+		return nil
+	}
+
+	for event, err := range c.client.Stream(ctx, c.sessionID, opts) {
+		if err != nil {
+			run.emit(nil, err)
 			return
 		}
-		// An echo means the post has returned, so its anchor is available now and
-		// the boundary check below can rely on it.
-		_, isEcho := event.(SessionInputConsumedEvent)
-		if !takeAnchor(isEcho) {
+		run.observe(ctx, event)
+		if run.stopped {
 			return
 		}
-		c.observe(ctx, event, tracker, yield)
-		if !yield(event, nil) {
+		if !run.emit(event, nil) {
 			return
 		}
-		if tracker.ended() {
-			if tracker.failure != nil {
-				yield(nil, tracker.failure)
+		if run.tracker.ended() {
+			if run.tracker.failure != nil {
+				run.emit(nil, run.tracker.failure)
 			}
 			return
 		}
 	}
 	// Reported rather than treated as an end: a caller reading the sequence as
 	// complete would take a partial answer for the whole one.
-	if !tracker.ended() {
-		yield(nil, fmt.Errorf("%w", ErrTurnIncomplete))
+	if !run.tracker.ended() && !run.stopped {
+		run.emit(nil, fmt.Errorf("turn on session %s: %w", c.sessionID, ErrTurnIncomplete))
 	}
 }
 
-// anchorResult carries the posted prompt's identifier, or why it was not posted.
-type anchorResult struct {
-	anchor string
-	err    error
+// turnRun is one turn's mutable state.
+//
+// A struct rather than locals in [Chat.drive], because the side effects need it:
+// which calls have run, which response is live, and whether the caller has stopped
+// reading. Threading four values through four methods reads worse than naming them.
+type turnRun struct {
+	chat    *Chat
+	tracker *turnTracker
+	yield   func(Event, error) bool
+
+	// dispatched records the calls this turn has run, keyed by call id.
+	//
+	// The wire delivers one call twice on the MCP path — [BlockStream] folds that
+	// away for a renderer, and this is the same fact on the executing side. Without
+	// it a deploy, a spend or a signature runs twice for one authorisation.
+	dispatched map[string]bool
+
+	// responseID and iteration say where in the turn we are, for the payloads that
+	// report them.
+	responseID string
+	iteration  int
+
+	// stopped records a caller that stopped reading. Nothing may yield after that:
+	// calling a spent yield panics the caller's range loop.
+	stopped bool
 }
 
-// streamReadyTimeout bounds the wait for the subscription's first event before the
-// prompt is posted anyway.
+// emit passes one event to the caller and records a caller that stopped reading.
 //
-// The server emits a heartbeat once the relay registers a reader, so this fires
-// only against a server that does not. Short, because the cost of waiting is added
-// to every turn while the cost of posting early is a race that the boundary check
-// already survives.
-const streamReadyTimeout = time.Second
+// Every yield in a turn goes through here. A side effect that ignored a false
+// return and yielded again would panic in the caller's loop, so no side effect
+// holds the raw yield.
+func (r *turnRun) emit(event Event, err error) bool {
+	if r.stopped {
+		return false
+	}
+	if !r.yield(event, err) {
+		r.stopped = true
+		return false
+	}
+	return true
+}
 
 // observe advances the tracker and runs the side effects one event calls for.
 //
-// Ordered deliberately: the tool call and the approval are answered before the
-// turn's end is read, because the server parks the turn on both and the terminal
-// event only follows once they are answered.
-func (c *Chat) observe(ctx context.Context, event Event, tracker *turnTracker, yield func(Event, error) bool) {
+// Ordered deliberately: a tool call and an approval are answered before the turn's
+// end is read, because the server parks the turn on both and the terminal event
+// only follows once they are answered.
+func (r *turnRun) observe(ctx context.Context, event Event) {
+	hooks := r.chat.opts.Hooks
 	switch e := event.(type) {
 	case SessionInputConsumedEvent:
-		tracker.crossBoundary(e)
+		r.tracker.crossBoundary(e)
 
 	case SessionStatusEvent:
-		tracker.observeStatus(e)
+		r.tracker.observeStatus(e)
 
 	case SessionSupersededEvent:
-		tracker.observeSuperseded(e)
+		r.tracker.observeSuperseded(e)
 
 	case ResponseCreatedEvent:
-		fire(c.opts.Hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
+		r.responseID = e.Response.ID
+		r.iteration = 0
+		fire(hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
 
 	case ReasoningStartedEvent:
-		fire(c.opts.Hooks.OnReasoningStart, ReasoningStartCtx{})
+		fire(hooks.OnReasoningStart, ReasoningStartCtx{ResponseID: r.responseID})
 
 	case RetryEvent:
-		fire(c.opts.Hooks.OnRetry, RetryCtx{Source: e.Source, Attempt: e.Attempt, MaxAttempts: e.MaxAttempts})
+		fire(hooks.OnRetry, RetryCtx{Source: e.Source, Attempt: e.Attempt, MaxAttempts: e.MaxAttempts})
 
 	case ErrorEvent:
-		fire(c.opts.Hooks.OnServerError, ServerErrorCtx{
+		fire(hooks.OnServerError, ServerErrorCtx{
 			Message: e.Error.Message, Source: e.Source, Code: e.Error.Code,
 		})
 
@@ -259,40 +257,40 @@ func (c *Chat) observe(ctx context.Context, event Event, tracker *turnTracker, y
 		if e.Filename != nil {
 			filename = *e.Filename
 		}
-		fire(c.opts.Hooks.OnFileOutput, FileOutputCtx{FileID: e.FileID, Filename: filename})
+		fire(hooks.OnFileOutput, FileOutputCtx{FileID: e.FileID, Filename: filename})
 
 	case ElicitationRequestEvent:
-		c.resolveElicitation(ctx, e, yield)
+		r.resolveElicitation(ctx, e)
 
 	case OutputItemDoneEvent:
-		c.dispatchToolCall(ctx, e, yield)
+		r.observeItem(ctx, e)
 
 	case ResponseCompletedEvent:
-		c.endResponse(e.Response, nil, tracker)
+		r.endResponse(e.Response, nil)
 	case ResponseCancelledEvent:
-		c.endResponse(e.Response, fmt.Errorf("%w: the turn was cancelled", ErrTurnFailed), tracker)
+		r.endResponse(e.Response, fmt.Errorf("%w: the turn was cancelled", ErrTurnFailed))
 	case IncompleteEvent:
-		c.endResponse(e.Response, fmt.Errorf("%w: the response was incomplete", ErrTurnFailed), tracker)
+		r.endResponse(e.Response, fmt.Errorf("%w: the response was incomplete", ErrTurnFailed))
 	case ResponseFailedEvent:
-		c.endResponse(e.Response, fmt.Errorf("%w: %s", ErrTurnFailed, responseFailure(e.Response)), tracker)
+		r.endResponse(e.Response, fmt.Errorf("%w: %s", ErrTurnFailed, responseFailure(e.Response)))
 	}
 }
 
-func (c *Chat) endResponse(response ResponseObject, detail error, tracker *turnTracker) {
-	fire(c.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
-	tracker.observeResponseTerminal(response.ID, detail)
+func (r *turnRun) endResponse(response ResponseObject, detail error) {
+	fire(r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
+	r.tracker.observeResponseTerminal(response.ID, detail)
+	// A terminal response that did not end the turn was a tool-loop iteration.
+	r.iteration++
 }
 
-// dispatchToolCall runs a client tool the agent called and posts its output.
+// observeItem reports a finished output item and runs the ones this client owns.
 //
-// Only an item awaiting the client is dispatched. A server-executed call arrives
-// on the same route already finished, and running it again would repeat whatever
-// it did.
-func (c *Chat) dispatchToolCall(ctx context.Context, e OutputItemDoneEvent, yield func(Event, error) bool) {
+// Every function_call fires the call hooks, whichever side ran it, so a caller
+// counting tool use sees all of it. Only an item awaiting this client is executed:
+// one the server already ran arrives finished, and running it again would repeat
+// whatever it did.
+func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 	if itemString(e.Item, "type") != "function_call" {
-		return
-	}
-	if itemString(e.Item, "status") != itemStatusActionRequired {
 		return
 	}
 	callID := itemString(e.Item, "call_id")
@@ -301,55 +299,95 @@ func (c *Chat) dispatchToolCall(ctx context.Context, e OutputItemDoneEvent, yiel
 		return
 	}
 
-	info := ToolCallInfo{
-		Name:      name,
-		Arguments: itemArguments(e.Item),
-		CallID:    callID,
-		AgentName: itemString(e.Item, "agent_name"),
+	awaitingClient := itemString(e.Item, "status") == itemStatusActionRequired
+	executedBy := "server"
+	if awaitingClient {
+		executedBy = "client"
 	}
-	fire(c.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
+	info := ToolCallInfo{
+		Name:       name,
+		Arguments:  itemArguments(e.Item),
+		CallID:     callID,
+		AgentName:  itemString(e.Item, "agent_name"),
+		ResponseID: r.responseID,
+		Iteration:  r.iteration,
+	}
+	fire(r.chat.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
 		Name: info.Name, CallID: info.CallID, AgentName: info.AgentName,
-		Arguments: info.Arguments, ExecutedBy: "client",
+		Arguments: info.Arguments, ExecutedBy: executedBy,
 	})
+	if !awaitingClient || r.dispatched[callID] {
+		return
+	}
+	r.dispatched[callID] = true
+	r.runTool(ctx, info)
+}
 
-	output, runErr := c.opts.Tools.run(ctx, info)
-	fire(c.opts.Hooks.OnToolCallEnd, ToolCallEndCtx{
+// runTool executes one call and posts its output.
+//
+// The output is posted whatever happened, because the server parks the turn on this
+// call: a tool that fails, panics, or is not registered still has to answer, or the
+// turn waits for its deadline and reads as a hung agent.
+func (r *turnRun) runTool(ctx context.Context, info ToolCallInfo) {
+	output, runErr := r.chat.opts.Tools.run(ctx, info)
+	fire(r.chat.opts.Hooks.OnToolCallEnd, ToolCallEndCtx{
 		Name: info.Name, CallID: info.CallID, Output: output, Err: runErr,
 	})
 
-	// Posted whatever happened, because the turn is parked on this call. The
-	// caller hears about the failure separately.
-	if _, err := c.client.Sessions().PostEvent(ctx, c.sessionID, SessionEventInput{
+	if _, err := r.chat.client.Sessions().PostEvent(ctx, r.chat.sessionID, SessionEventInput{
 		Type: InputTypeFunctionCallOutput,
-		Data: map[string]any{"call_id": callID, "output": output},
+		Data: map[string]any{"call_id": info.CallID, "output": output},
 	}); err != nil {
-		yield(nil, fmt.Errorf("post output for tool %q: %w", name, err))
+		r.emit(nil, fmt.Errorf("post output for tool %q: %w",
+			sanitizeForError(info.Name, maxToolNameRunes), err))
 		return
 	}
-	if runErr != nil && !errors.Is(runErr, ErrToolNotRegistered) {
-		yield(nil, runErr)
+	if runErr != nil {
+		// Reported, including a tool this client does not have: a server asking for
+		// a tool nobody registered is a misconfigured or hostile session, and the
+		// caller is the only party who can act on that.
+		r.emit(nil, runErr)
 	}
 }
 
 // resolveElicitation answers an approval the server is waiting on.
 //
-// Declined when no hook decides, which is this package's own behaviour rather than
-// a policy: approving would run a tool under the caller's identity, and a client
-// that cannot ask cannot consent on their behalf.
+// Declined when no hook decides, and declined when the hook panics. That is this
+// package's own behaviour rather than a policy: it cannot know what a caller would
+// approve, and accepting authorises the pending tool to run with the session
+// owner's execution identity — see [ElicitationAccept].
 //
-// Answered against the session the request names. A sub-agent's request names its
-// own session, and a verdict posted to the session being read would leave the
-// asking one parked.
-func (c *Chat) resolveElicitation(ctx context.Context, e ElicitationRequestEvent, yield func(Event, error) bool) {
+// Answered against the session the request names, which is a sub-agent's own when
+// its prompt is mirrored into an ancestor's stream.
+func (r *turnRun) resolveElicitation(ctx context.Context, e ElicitationRequestEvent) {
 	verdict := ElicitationDecline
-	if c.opts.Hooks.OnElicitation != nil && c.opts.Hooks.OnElicitation(elicitationCtxOf(c.sessionID, e)) {
+	if r.decideElicitation(e) {
 		verdict = ElicitationAccept
 	}
-	target := elicitationTarget(c.sessionID, e)
-	if err := c.client.Sessions().ResolveElicitation(ctx, target, e.ElicitationID,
+	target := elicitationTarget(r.chat.sessionID, e)
+	if err := r.chat.client.Sessions().ResolveElicitation(ctx, target, e.ElicitationID,
 		ElicitationResult{Action: verdict}); err != nil {
-		yield(nil, fmt.Errorf("resolve elicitation %s: %w", e.ElicitationID, err))
+		r.emit(nil, fmt.Errorf("resolve elicitation %s: %w",
+			sanitizeForError(e.ElicitationID, maxRequestIDRunes), err))
 	}
+}
+
+// decideElicitation asks the caller's hook, and treats a panic as a decline.
+//
+// A hook is caller code doing a policy lookup. A panic there must not leave the
+// approval unanswered or end the turn, and the safe answer is already known, so it
+// is the one given.
+func (r *turnRun) decideElicitation(e ElicitationRequestEvent) (accept bool) {
+	hook := r.chat.opts.Hooks.OnElicitation
+	if hook == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			accept = false
+		}
+	}()
+	return hook(elicitationCtxOf(r.chat.sessionID, e))
 }
 
 // elicitationTarget reports the session whose resolve route owns a request.

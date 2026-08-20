@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -248,7 +249,7 @@ func TestAnUnregisteredToolIsAnsweredRatherThanLeftParked(t *testing.T) {
 
 	var reported error
 	for _, err := range chat.Send(ctx, "hi") {
-		if err != nil && !errors.Is(err, ErrTurnIncomplete) {
+		if err != nil {
 			reported = err
 		}
 	}
@@ -296,7 +297,7 @@ func TestARegisteredToolRunsAndItsOutputIsPosted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for _, err := range chat.Send(ctx, "hi") {
-		if err != nil && !errors.Is(err, ErrTurnIncomplete) {
+		if err != nil {
 			t.Fatalf("Send: %v", err)
 		}
 	}
@@ -377,106 +378,236 @@ func TestAnApprovalGoesToTheSessionTheRequestNames(t *testing.T) {
 	}
 }
 
-// TestTheSubscriptionExistsBeforeThePromptIsPosted pins the ordering the whole read
-// depends on. A prompt posted before the subscription can be answered with nobody
-// listening, and the turn's events are then missed.
-func TestTheSubscriptionExistsBeforeThePromptIsPosted(t *testing.T) {
+// TestNothingIsPostedUntilTheSubscriptionIsLive pins the ordering the whole read
+// depends on, by its consequence rather than by arrival order.
+//
+// An earlier version of this test recorded which HTTP request reached the server
+// first. That assertion is satisfied by any mechanism that happens to be fast,
+// including a bare sleep, so it could not see the invariant it was named for. These
+// two cases can only pass if the prompt is posted from the subscription itself.
+func TestNothingIsPostedUntilTheSubscriptionIsLive(t *testing.T) {
 	t.Parallel()
 
-	var order []string
-	var mu sync.Mutex
-	record := func(what string) {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(order) == 0 || order[len(order)-1] != what {
-			order = append(order, what)
-		}
-	}
-
-	posted := make(chan struct{})
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/stream"):
-			record("subscribe")
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher := w.(http.Flusher)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"type":"session.heartbeat"}`)
-			flusher.Flush()
-			select {
-			case <-posted:
-			case <-time.After(3 * time.Second):
+	t.Run("a stream that never opens posts nothing", func(t *testing.T) {
+		var posts atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				posts.Add(1)
 			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", echoFrame)
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"type":"response.completed","response":{"id":"r","status":"completed"}}`)
-			flusher.Flush()
-			<-r.Context().Done()
-		case strings.HasSuffix(r.URL.Path, "/events"):
-			record("post")
-			close(posted)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"queued","item_id":"item_1"}`))
-		}
-	}))
-	defer httpServer.Close()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"runner_unavailable"}`))
+		}))
+		defer srv.Close()
 
-	client, err := New(httpServer.URL)
+		client, err := New(srv.URL)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = client.Close() }()
+
+		chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}})
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		var got error
+		for _, err := range chat.Send(ctx, "deploy to prod") {
+			if err != nil {
+				got = err
+			}
+		}
+		if got == nil {
+			t.Fatal("a stream that could not open reported success")
+		}
+		// The error is retryable by its own documentation, so the prompt must not
+		// have landed — otherwise a retry runs the turn twice.
+		time.Sleep(300 * time.Millisecond)
+		if posts.Load() != 0 {
+			t.Errorf("the prompt was posted %d times for a turn that never started", posts.Load())
+		}
+	})
+
+	t.Run("a turn nobody reads posts nothing", func(t *testing.T) {
+		server, client := newChatServer(t, nil, []string{echoFrame,
+			`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`})
+		chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}})
+
+		_ = chat.Prompt("never read")
+		time.Sleep(300 * time.Millisecond)
+		if got := server.postedTypes(); len(got) != 0 {
+			t.Errorf("an unread turn posted %v; Chat.Prompt promises it sends nothing", got)
+		}
+	})
+}
+
+// TestChatRefusesToShareTheSubscriptionHook pins that a caller cannot post a second
+// prompt for one turn.
+//
+// A Chat posts from [StreamOptions.OnSubscribed]; a caller's own hook there would
+// run too, and the server would answer both prompts. The single-use guard on a Turn
+// does not cover it, because both posts belong to one read.
+func TestChatRefusesToShareTheSubscriptionHook(t *testing.T) {
+	t.Parallel()
+
+	client, err := New("http://127.0.0.1:1")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	chat, _ := client.Chat("conv_1", ChatOptions{Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	for range chat.Send(ctx, "hi") {
+	_, err = client.Chat("conv_1", ChatOptions{
+		Stream: StreamOptions{OnSubscribed: func(context.Context, Subscription) error { return nil }},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("got %v, want ErrInvalidArgument", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(order) < 2 || order[0] != "subscribe" || order[1] != "post" {
-		t.Fatalf("order = %v, want subscribe then post", order)
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("the refusal does not say why: %v", err)
 	}
 }
 
-// TestAServerRunToolIsNotRunAgain pins the one thing that separates a call to
-// dispatch from a call to display.
-//
-// A function_call item arrives with status action_required when the tool is the
-// client's to run, and completed when the server already ran it. Dispatching the
-// second would repeat whatever it did — a write, a spend, a deploy.
-func TestAServerRunToolIsNotRunAgain(t *testing.T) {
+// TestOneCallIDRunsAToolOnce pins the executing side of a fact [BlockStream] already
+// folds away for a renderer: the MCP path delivers one call twice. A non-idempotent
+// tool must not run twice for one authorisation.
+func TestOneCallIDRunsAToolOnce(t *testing.T) {
 	t.Parallel()
 
+	call := `{"type":"response.output_item.done","item":{"type":"function_call",` +
+		`"status":"action_required","call_id":"c1","name":"Deploy","arguments":"{}"}}`
 	server, client := newChatServer(t, nil, []string{
-		echoFrame,
-		`{"type":"response.output_item.done","item":{"type":"function_call","status":"completed",` +
-			`"call_id":"c1","name":"Deploy","arguments":"{}"}}`,
-		`{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`,
+		echoFrame, call, call,
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
 	})
 
 	tools := NewToolRegistry()
-	ran := 0
+	var ran atomic.Int64
 	if err := tools.Register("Deploy", nil, func(context.Context, ToolCallInfo) (string, error) {
-		ran++
+		ran.Add(1)
 		return "deployed", nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	chat, _ := client.Chat("conv_1", ChatOptions{
-		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
-		Tools: tools,
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for range chat.Send(ctx, "hi") {
 	}
 
-	if ran != 0 {
-		t.Errorf("a server-executed tool was run again %d times", ran)
+	if ran.Load() != 1 {
+		t.Errorf("one call ran the tool %d times", ran.Load())
 	}
-	if got := server.postedTypes(); len(got) != 1 || got[0] != "message" {
-		t.Errorf("posted %v, want only the prompt", got)
+	if got := server.postedTypes(); len(got) != 2 {
+		t.Errorf("posted %v, want the prompt and one output", got)
+	}
+}
+
+// TestBreakingOnAnErrorDoesNotPanic pins the range-over-func contract across the
+// side effects, which yield too.
+//
+// A caller writing "if err != nil { break }" is the ordinary case. When a side
+// effect ignored yield's false return and the loop then yielded again, that caller
+// got "range function continued iteration after function for loop body returned
+// false" — a panic in their process, from a library.
+func TestBreakingOnAnErrorDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	for name, script := range map[string][]string{
+		"a failing tool": {
+			echoFrame,
+			`{"type":"response.output_item.done","item":{"type":"function_call",` +
+				`"status":"action_required","call_id":"c1","name":"Boom","arguments":"{}"}}`,
+			`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+		},
+		"an approval that cannot be resolved": {
+			echoFrame,
+			`{"type":"response.elicitation_request","elicitation_id":"el_1","params":{"message":"ok?"}}`,
+			`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, client := newChatServer(t, nil, script)
+			tools := NewToolRegistry()
+			if err := tools.Register("Boom", nil, func(context.Context, ToolCallInfo) (string, error) {
+				return "", errors.New("blew up")
+			}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			chat, _ := client.Chat("conv_1", ChatOptions{
+				Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+			})
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			for _, err := range chat.Send(ctx, "hi") {
+				if err != nil {
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestAPanickingApprovalHookDeclines pins that the fail-closed answer survives
+// caller code that fails.
+//
+// A hook is a policy lookup in someone else's program. A panic there must not leave
+// the approval unanswered — which parks the turn — nor end the read, because the
+// safe answer is already known.
+func TestAPanickingApprovalHookDeclines(t *testing.T) {
+	t.Parallel()
+
+	server, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.elicitation_request","elicitation_id":"el_1","params":{"message":"ok?"}}`,
+		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	})
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Hooks: StreamHooks{OnElicitation: func(ElicitationCtx) bool { panic("policy lookup failed") }},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for range chat.Send(ctx, "hi") {
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.resolved) != 1 || server.resolved[0] != "conv_1:decline" {
+		t.Fatalf("resolved %v, want one decline", server.resolved)
+	}
+}
+
+// TestAToolCallCarriesItsResponseAndIteration pins two fields a tool reads to scope
+// an idempotency guard. Documented and always zero is worse than absent.
+func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
+	t.Parallel()
+
+	_, client := newChatServer(t, nil, []string{
+		echoFrame,
+		`{"type":"response.created","response":{"id":"r7","model":"coder","status":"in_progress"}}`,
+		`{"type":"response.output_item.done","item":{"type":"function_call",` +
+			`"status":"action_required","call_id":"c1","name":"Echo","arguments":"{}"}}`,
+		`{"type":"response.completed","response":{"id":"r7","status":"completed"}}`,
+	})
+	tools := NewToolRegistry()
+	var seen ToolCallInfo
+	if err := tools.Register("Echo", nil, func(_ context.Context, i ToolCallInfo) (string, error) {
+		seen = i
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	chat, _ := client.Chat("conv_1", ChatOptions{
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for range chat.Send(ctx, "hi") {
+	}
+
+	if seen.ResponseID != "r7" {
+		t.Errorf("ResponseID = %q, want r7", seen.ResponseID)
 	}
 }
