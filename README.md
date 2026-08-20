@@ -12,8 +12,7 @@ a typed transport. The rebuild closes the difference.
 The first milestone removed the previous implementation and its code generator
 and left the default branch not building, so that a reviewer could judge the
 removal and the rebuild separately. This milestone restores it: `bin/check.sh`
-returns all five legs green. `docs/adr/0001-rebuild-rather-than-reland.md` records
-why the branch was allowed to go red.
+returns all five legs green.
 
 | Milestone | Contents |
 |---|---|

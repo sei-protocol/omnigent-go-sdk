@@ -8,7 +8,6 @@
 //
 // There is no session, files, turn-loop, transcript-block or tool-dispatch
 // surface. A caller needing those reaches the routes directly.
-// docs/adr/0001-rebuild-rather-than-reland.md records why.
 //
 // The public API returns iter.Seq2, so building against this package needs Go
 // 1.23 or newer. go.mod declares that floor and CI builds it.
