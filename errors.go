@@ -186,6 +186,15 @@ var (
 	// divert a credential: point the base URL at the route that serves the
 	// upload. A location naming another server is [ErrUnsafeRedirect] instead.
 	ErrRedirectNotFollowed = errors.New("could not follow a redirect")
+
+	// ErrResponseTooLarge means a successful response's body exceeded what this
+	// package will decode.
+	//
+	// The size is not a caller's choice, because the caller does not choose the
+	// body. A server the caller cannot see is the only party writing it, and a
+	// decode is the one place this package holds a whole response in memory at
+	// once. See maxResponseBytes.
+	ErrResponseTooLarge = errors.New("the response is too large to decode")
 )
 
 // sanitizeForError makes a server-chosen string safe to render into an error.
@@ -268,6 +277,20 @@ var _ Error = (*APIError)(nil)
 // maxErrorBodyBytes caps how much of a failed response this package retains or
 // drains.
 const maxErrorBodyBytes = 64 << 10
+
+// maxResponseBytes caps a 2xx body this package decodes into a value.
+//
+// maxErrorBodyBytes covers the failure path and the pooling drain, and neither
+// reaches this one: a decode reads until the JSON value ends, so without a bound
+// the ceiling is whatever the unary timeout allows a server to send. Some types
+// this package decodes carry an open-ended map, which turns a large body into a
+// larger heap.
+//
+// The number is the largest legitimate response with room to spare, not a tuned
+// limit. A session snapshot is the biggest one: the server returns its newest
+// 100 items, so a transcript of large messages is the shape that grows. Files go
+// through Download, which takes its own bound from the caller.
+const maxResponseBytes = 32 << 20
 
 // APIError is a non-2xx response from the server.
 //
