@@ -246,12 +246,39 @@ func defaultTransport(unaryTimeout time.Duration) *http.Transport {
 //
 // A caller who supplies an http.Client with its own CheckRedirect keeps it —
 // see [WithHTTPClient] — and owns the consequences.
+// stripRedirectURL drops the *url.Error net/http wraps a refused redirect in.
+//
+// net/http sets that wrapper's URL field to the verbatim Location header, so the
+// rendered error carries whatever the server put there — a password in userinfo,
+// an OAuth state and code on a 302-to-login. [checkRedirect] takes care to print
+// only hosts; this is where that care would otherwise be undone. The inner error
+// still wraps [ErrUnsafeRedirect], so errors.Is keeps working.
+func stripRedirectURL(err error) error {
+	if !errors.Is(err, ErrUnsafeRedirect) {
+		return err
+	}
+	var wrapped *url.Error
+	if errors.As(err, &wrapped) {
+		return wrapped.Err
+	}
+	return err
+}
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) > maxRedirects {
 		return fmt.Errorf("%w: stopped after %d redirects", ErrUnsafeRedirect, maxRedirects)
 	}
 	origin := via[0]
 	switch {
+	case !reachableScheme(req.URL.Scheme):
+		// Ahead of every other gate, because the gates below reason about hosts
+		// and ports and a scheme they do not recognise slips past all of them:
+		// [effectivePort] defaults anything that is not https to 80, so a
+		// same-host Location naming another scheme reads as the same endpoint.
+		// A caller-supplied transport with a registered protocol then carries the
+		// credential there and the call reports success.
+		return fmt.Errorf("%w: %s redirected to scheme %q, which this package does not speak",
+			ErrUnsafeRedirect, origin.URL.Host, req.URL.Scheme)
 	case !sameEndpoint(origin.URL, req.URL):
 		return fmt.Errorf("%w: %s redirected to %s, which the base URL does not name; "+
 			"the request's credentials were not sent there",
@@ -313,10 +340,21 @@ func effectivePort(u *url.URL) string {
 	if port := u.Port(); port != "" {
 		return port
 	}
-	if u.Scheme == "https" {
+	switch u.Scheme {
+	case "https":
 		return "443"
+	case "http":
+		return "80"
 	}
-	return "80"
+	// No default port for a scheme this package does not speak. Returning one
+	// would make two different endpoints compare equal.
+	return ""
+}
+
+// reachableScheme reports whether this package will carry a request, and its
+// credentials, over the named scheme.
+func reachableScheme(scheme string) bool {
+	return scheme == "http" || scheme == "https"
 }
 
 // sendsCredentialInClear reports whether a credential sent to u would cross a
@@ -460,7 +498,6 @@ func WithInsecureCredentialTransport() Option {
 	})
 }
 
-// WithUserAgent sets the User-Agent header on every request.
 // WithInternalClientOrigin sets the Origin header a deployment checks to tell an
 // internal caller from a browser one.
 //
@@ -478,6 +515,7 @@ func WithInternalClientOrigin(origin string) Option {
 	})
 }
 
+// WithUserAgent sets the User-Agent header on every request.
 func WithUserAgent(userAgent string) Option {
 	return optionFunc(func(cfg *config) error {
 		cfg.header.Set("User-Agent", userAgent)
@@ -612,7 +650,7 @@ func (c *Client) doJSON(
 
 	resp, err := c.unary.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, req.URL.Path, err)
+		return fmt.Errorf("%s %s: %w", method, req.URL.Path, stripRedirectURL(err))
 	}
 	defer func() {
 		// Drain before closing so the connection returns to the pool.

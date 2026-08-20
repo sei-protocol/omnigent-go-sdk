@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 )
 
 // Sentinels for the failure classes the server actually distinguishes. Match
@@ -99,8 +101,44 @@ var (
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
 )
 
-// APIError is a non-2xx response from the server.
+// sanitizeForError makes a server-chosen string safe to render into an error.
 //
+// An error string is the one thing a caller reliably logs, and a log line is a
+// record other tools parse. Raw control bytes let the server forge a second line
+// or drive a terminal; an unbounded string lets it flood the log. Both are the
+// server's choice, not the caller's, so neither reaches the rendered message.
+//
+// Replaces every C0 and C1 control with a space, collapses runs, and caps the
+// result. Invalid UTF-8 becomes the replacement rune rather than raw bytes.
+func sanitizeForError(s string, max int) string {
+	var b strings.Builder
+	b.Grow(min(len(s), max))
+	space := false
+	for _, r := range s {
+		switch {
+		case r == utf8.RuneError:
+			r = '\uFFFD'
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			// One space for any run of controls, so a forged newline cannot start
+			// a line and a stripped run cannot join two words.
+			if !space && b.Len() > 0 {
+				b.WriteByte(' ')
+				space = true
+			}
+			continue
+		}
+		space = false
+		if b.Len() >= max {
+			return strings.TrimSpace(b.String()) + "..."
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// maxErrorFieldRunes bounds one server-supplied field in a rendered error. The
+// body cap is 64 KiB, so without this a single title fills a log line with it.
+const maxErrorFieldRunes = 200
 
 // Error is the interface every server-response error in this package satisfies.
 //
@@ -233,14 +271,15 @@ func (e *APIError) Error() string {
 	// leads when present: it says more than the code and is shorter than Cause.
 	headline := e.Code
 	if e.Title != "" {
-		headline = e.Title
+		headline = sanitizeForError(e.Title, maxErrorFieldRunes)
 	}
+	message := sanitizeForError(e.Message, maxErrorFieldRunes)
 	var detail string
 	switch {
-	case headline != "" && e.Message != "":
-		detail = fmt.Sprintf("%s: %s: %s", label, headline, e.Message)
-	case e.Message != "":
-		detail = fmt.Sprintf("%s: %s", label, e.Message)
+	case headline != "" && message != "":
+		detail = fmt.Sprintf("%s: %s: %s", label, headline, message)
+	case message != "":
+		detail = fmt.Sprintf("%s: %s", label, message)
 	case headline != "":
 		detail = fmt.Sprintf("%s: %s", label, headline)
 	case len(e.Body) > 0:
@@ -259,6 +298,8 @@ func (e *APIError) Error() string {
 	return "omnigent: " + detail
 }
 
+// Is reports whether this error matches one of the package sentinels, so that
+// errors.Is(err, ErrNotFound) works on a wrapped *APIError. A 503 matches both
 // [ErrUnavailable] and the broader [ErrServer].
 func (e *APIError) Is(target error) bool {
 	switch target {

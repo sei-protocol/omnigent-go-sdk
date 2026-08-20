@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 )
 
 const (
@@ -206,7 +205,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 		// stream at the deadline. Liveness is the watchdog's job instead.
 		resp, err := c.stream.Do(req)
 		if err != nil {
-			yield(nil, fmt.Errorf("open stream for session %s: %w", sessionID, err))
+			yield(nil, fmt.Errorf("open stream for session %s: %w", sessionID, stripRedirectURL(err)))
 			return
 		}
 		defer func() { _ = resp.Body.Close() }()
@@ -546,12 +545,5 @@ func decodeFrame(name, payload string) (Event, bool, error) {
 // place this package quotes bytes it did not produce.
 func bodyPreview(body []byte) string {
 	const limit = 256
-	if len(body) <= limit {
-		return string(body)
-	}
-	truncated := body[:limit]
-	for len(truncated) > 0 && !utf8.Valid(truncated) {
-		truncated = truncated[:len(truncated)-1]
-	}
-	return string(truncated) + "..."
+	return sanitizeForError(string(body), limit)
 }

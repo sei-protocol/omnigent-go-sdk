@@ -257,3 +257,144 @@ func TestEveryUnionMemberDecodes(t *testing.T) {
 		}
 	}
 }
+
+// goKindFor maps a schema's declared type to the reflect.Kind a Go field
+// mirroring it must have. A schema that declares no type, or declares several,
+// carries no expectation and is absent from this map.
+func goKindFor(node map[string]any) (reflect.Kind, bool) {
+	switch node["type"] {
+	case "string":
+		return reflect.String, true
+	case "integer":
+		return reflect.Int, true
+	case "number":
+		return reflect.Float64, true
+	case "boolean":
+		return reflect.Bool, true
+	case "array":
+		return reflect.Slice, true
+	case "object":
+		return reflect.Map, true
+	}
+	if _, isRef := node["$ref"]; isRef {
+		return reflect.Struct, true
+	}
+	return reflect.Invalid, false
+}
+
+// unwrapProperty strips the anyOf-with-null wrapper the server uses for an
+// optional field and reports whether it found one. It returns the inner schema,
+// so the caller compares against the type the field actually carries.
+func unwrapProperty(prop map[string]any) (inner map[string]any, optional bool) {
+	variants, wrapped := prop["anyOf"].([]any)
+	if !wrapped {
+		return prop, false
+	}
+	var nonNull []map[string]any
+	for _, v := range variants {
+		node, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if node["type"] == "null" {
+			optional = true
+			continue
+		}
+		nonNull = append(nonNull, node)
+	}
+	// A union of two real types carries no single expectation; leave it alone.
+	if len(nonNull) != 1 {
+		return nil, optional
+	}
+	return nonNull[0], optional
+}
+
+// freeFormFields are fields the description declares as an untyped object, so Go
+// carries map[string]any and no stronger expectation exists. Each entry is
+// deliberate: the schema genuinely publishes no shape, rather than this package
+// declining to mirror one.
+var freeFormFields = map[string]bool{}
+
+// TestEveryDeclaredFieldMatchesItsSchemaType is the dimension a field-name check
+// cannot reach. A field whose Go type contradicts the description decodes to the
+// zero value or fails the whole event, and the name check passes either way.
+func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
+	schemas := loadSpec(t)
+	types := mirroredTypes(t)
+
+	names := make([]string, 0, len(types))
+	for name := range types {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, goName := range names {
+		schemaName, mapped := schemaFor[goName]
+		if !mapped {
+			continue
+		}
+		node, ok := schemas[schemaName].(map[string]any)
+		if !ok {
+			continue
+		}
+		props, _ := node["properties"].(map[string]any)
+		required := map[string]bool{}
+		if list, ok := node["required"].([]any); ok {
+			for _, r := range list {
+				if name, ok := r.(string); ok {
+					required[name] = true
+				}
+			}
+		}
+
+		rt := types[goName]
+		for i := range rt.NumField() {
+			field := rt.Field(i)
+			tag := field.Tag.Get("json")
+			if tag == "" || tag == "-" {
+				continue
+			}
+			wire := strings.Split(tag, ",")[0]
+			prop, ok := props[wire].(map[string]any)
+			if !ok {
+				continue // the name check owns a property the schema lacks
+			}
+			if freeFormFields[goName+"."+field.Name] {
+				continue
+			}
+
+			inner, optional := unwrapProperty(prop)
+			if inner == nil {
+				continue // a genuine union carries no single expectation
+			}
+			want, known := goKindFor(inner)
+			if !known {
+				continue
+			}
+
+			got := field.Type
+			isPointer := got.Kind() == reflect.Pointer
+			if isPointer {
+				got = got.Elem()
+			}
+
+			// A slice or map already encodes absence as nil, so it never needs a
+			// pointer and the optionality rule does not apply to it.
+			nilable := got.Kind() == reflect.Slice || got.Kind() == reflect.Map
+
+			if got.Kind() != want && !(want == reflect.Struct && got.Kind() == reflect.Struct) {
+				t.Errorf("%s.%s is %s, but schema %s declares %q for %q",
+					goName, field.Name, field.Type, schemaName, inner["type"], wire)
+				continue
+			}
+			switch {
+			case required[wire] && isPointer:
+				t.Errorf("%s.%s is a pointer, but schema %s lists %q as required",
+					goName, field.Name, schemaName, wire)
+			case optional && !isPointer && !nilable:
+				t.Errorf("%s.%s is a value type, but schema %s declares %q optional, so a caller cannot tell zero from absent",
+					goName, field.Name, schemaName, wire)
+			}
+		}
+	}
+}

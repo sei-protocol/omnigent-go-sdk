@@ -445,3 +445,110 @@ func TestSameEndpointIgnoresHostCase(t *testing.T) {
 		})
 	}
 }
+
+// TestRedirectRefusesASchemeThePackageDoesNotSpeak covers the gate that runs
+// ahead of the host and port comparisons.
+//
+// Those comparisons reason about hosts and ports, and effectivePort answers only
+// for http and https, so a same-host Location naming any other scheme used to
+// read as the same endpoint and clear every gate. A caller-supplied transport
+// that registers a protocol would then carry the credential there.
+func TestRedirectRefusesASchemeThePackageDoesNotSpeak(t *testing.T) {
+	t.Parallel()
+
+	for _, scheme := range []string{"unix", "ftp", "file", "ws", "wss", "gopher"} {
+		t.Run(scheme, func(t *testing.T) {
+			t.Parallel()
+
+			var origin string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				host := strings.TrimPrefix(origin, "http://")
+				w.Header().Set("Location", scheme+"://"+host+r.URL.Path)
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer server.Close()
+			origin = server.URL
+
+			// A credential, because the point of the gate is that it is not carried.
+			client, err := New(server.URL, WithAuthHeader("X-Trusted-Identity", "svc@sei.io"))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			var out map[string]any
+			err = client.doJSON(context.Background(), http.MethodGet,
+				[]string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+			if err == nil {
+				t.Fatalf("doJSON = nil error, want a refusal for a %s:// Location", scheme)
+			}
+			if !errors.Is(err, ErrUnsafeRedirect) {
+				t.Errorf("error = %v, want it to wrap ErrUnsafeRedirect", err)
+			}
+		})
+	}
+}
+
+// TestRefusedRedirectErrorCarriesNoCredential pins the redaction that
+// [checkRedirect]'s own messages imply and net/http would otherwise undo.
+//
+// net/http wraps a CheckRedirect refusal in a *url.Error whose URL field is the
+// verbatim Location header, so the rendered error reproduces whatever the server
+// chose to put there. A refusal fires exactly when something hostile is
+// happening, and it lands in the caller's log.
+func TestRefusedRedirectErrorCarriesNoCredential(t *testing.T) {
+	t.Parallel()
+
+	secrets := []struct {
+		name     string
+		location func(host string) string
+		leaked   []string
+	}{
+		{
+			name:     "a password in userinfo",
+			location: func(host string) string { return "https://svc:s3cr3t-password@" + host + "/v1/x" },
+			leaked:   []string{"s3cr3t-password"},
+		},
+		{
+			name:     "an oauth state and code on a redirect to login",
+			location: func(string) string { return "https://login.evil.tld/authorize?state=OPAQUE-STATE&code=AUTHCODE-abc123" },
+			leaked:   []string{"AUTHCODE-abc123", "OPAQUE-STATE"},
+		},
+		{
+			name:     "a token in the query string",
+			location: func(host string) string { return "http://" + host + "/v1/x?access_token=ghs_REALTOKEN" },
+			leaked:   []string{"ghs_REALTOKEN"},
+		},
+	}
+
+	for _, tc := range secrets {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var origin string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Location", tc.location(strings.TrimPrefix(origin, "http://")))
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer server.Close()
+			origin = server.URL
+
+			client, err := New(server.URL, WithAuthHeader("X-Trusted-Identity", "svc@sei.io"))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			var out map[string]any
+			err = client.doJSON(context.Background(), http.MethodGet,
+				[]string{"v1", "sessions", "conv_1"}, nil, nil, &out)
+			if err == nil {
+				t.Fatal("doJSON = nil error, want a refusal")
+			}
+			if !errors.Is(err, ErrUnsafeRedirect) {
+				t.Fatalf("error = %v, want it to wrap ErrUnsafeRedirect", err)
+			}
+			for _, secret := range tc.leaked {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error renders %q, which the server chose:\n  %v", secret, err)
+				}
+			}
+		})
+	}
+}

@@ -393,3 +393,55 @@ func TestAPIErrorMessageOmitsAnAbsentRequestID(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
+
+// TestErrorRendersNoServerControlBytes pins the sanitizer on both paths that
+// render server-chosen text: [APIError.Error]'s title and message, and the
+// stream reader's frame preview.
+//
+// An error string is what a caller logs, and a log line is a record other tools
+// parse. A raw newline lets the server forge a second line; a raw escape drives
+// the reader's terminal; an unbounded field floods the log.
+func TestErrorRendersNoServerControlBytes(t *testing.T) {
+	t.Parallel()
+
+	forged := "ok\n2026-08-19T12:00:00Z INFO driver: audit \x1b[1;32mPASS\x1b[0m"
+
+	t.Run("a forged log line in the title", func(t *testing.T) {
+		t.Parallel()
+		got := (&APIError{StatusCode: 412, Title: forged, Message: "m"}).Error()
+		for _, banned := range []string{"\n", "\r", "\x1b", "\x00"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("Error() renders %q:\n  %q", banned, got)
+			}
+		}
+		if !strings.Contains(got, "PASS") {
+			t.Errorf("Error() dropped the readable text entirely: %q", got)
+		}
+	})
+
+	t.Run("an unbounded title", func(t *testing.T) {
+		t.Parallel()
+		got := (&APIError{StatusCode: 500, Title: strings.Repeat("A", 60<<10)}).Error()
+		if len(got) > 512 {
+			t.Errorf("Error() is %d bytes; a server-chosen field is not bounded", len(got))
+		}
+	})
+
+	t.Run("control bytes in a frame preview", func(t *testing.T) {
+		t.Parallel()
+		got := bodyPreview([]byte("\x1b[2Knot json\nforged: line"))
+		for _, banned := range []string{"\n", "\x1b"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("bodyPreview renders %q:\n  %q", banned, got)
+			}
+		}
+	})
+
+	t.Run("invalid utf-8 does not eat the whole preview", func(t *testing.T) {
+		t.Parallel()
+		got := bodyPreview(append([]byte{0xff}, []byte(strings.Repeat("A", 400))...))
+		if !strings.Contains(got, "AAAA") {
+			t.Errorf("one invalid byte discarded the readable preview: %q", got)
+		}
+	})
+}

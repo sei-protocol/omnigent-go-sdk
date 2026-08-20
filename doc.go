@@ -128,5 +128,4 @@
 // opening a fresh stream, and deduping persisted items by id. Reconnection is
 // routine rather than exceptional — some deployments cap HTTP stream duration at
 // a few minutes.
-// package omnigent
 package omnigent
