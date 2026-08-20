@@ -209,7 +209,60 @@ func mirroredTypes(t *testing.T) map[string]reflect.Type {
 		}
 		walk(reflect.TypeOf(ev))
 	}
+	// The event registry reaches only what the stream decodes. Types the request
+	// and response surface uses need their own roots, or they sit in schemaFor
+	// looking covered while nothing inspects a single field.
+	for _, root := range surfaceRoots {
+		walk(reflect.TypeOf(root))
+	}
 	return found
+}
+
+// surfaceRoots are the types the session and file routes return or accept, one
+// zero value each. [TestEveryMappedTypeIsReachable] fails when schemaFor names a
+// type no root here reaches, which is the only thing standing between a mapped
+// type and silent non-coverage.
+var surfaceRoots = []any{
+	SessionResponse{},
+	SessionList{},
+	SessionListItem{},
+	ChildSessionList{},
+	ChildSessionSummary{},
+	ConversationDeleted{},
+	ConversationItem{},
+	SessionForkRequest{},
+	UpdateSessionRequest{},
+	PaginatedList{},
+	AgentObject{},
+
+	// ConversationItem.Data is an eleven-variant union in the description, and Go
+	// has no sum type, so the field decodes as any and a caller unmarshals into
+	// one of these after switching on ConversationItem.Type. They are exported,
+	// so they are checked; nothing else reaches them.
+	MessageData{},
+	FunctionCallData{},
+	FunctionCallOutputData{},
+	ErrorData{},
+	ReasoningData{},
+	CompactionData{},
+	NativeToolData{},
+	SlashCommandData{},
+	TerminalCommandData{},
+	ResourceEventData{},
+	RoutingDecisionData{},
+}
+
+// TestEveryMappedTypeIsReachable is the inverse of
+// [TestEveryMirroredTypeIsMapped], and the two together are what make schemaFor
+// mean coverage. Without it an entry can name a schema for a type nothing walks,
+// and the field, type and enum checks all skip it in silence.
+func TestEveryMappedTypeIsReachable(t *testing.T) {
+	reached := mirroredTypes(t)
+	for goName := range schemaFor {
+		if _, ok := reached[goName]; !ok {
+			t.Errorf("schemaFor names %s, but no root reaches it, so nothing checks its fields", goName)
+		}
+	}
 }
 
 // TestEveryMirroredTypeIsMapped fails when a type reachable from the decoder has
