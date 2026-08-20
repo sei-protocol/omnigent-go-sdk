@@ -117,6 +117,21 @@ var (
 	// reasoning and what Go's own rule does instead.
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
 
+	// ErrTurnFailed reports that the server ended a turn without an answer.
+	//
+	// The turn reached the server and the server reported a failure, so the wrapped
+	// message is the server's own reason. Distinct from a transport failure, which
+	// says nothing about whether the turn ran.
+	ErrTurnFailed = errors.New("the turn failed")
+
+	// ErrTurnSuperseded reports that the session a turn was reading has been
+	// replaced, and names the conversation that replaced it.
+	//
+	// Not followed automatically: a caller holding the old session id would keep
+	// addressing a retired conversation, and which session to address next is the
+	// caller's decision.
+	ErrTurnSuperseded = errors.New("the session was superseded")
+
 	// ErrRedirectNotFollowed reports a redirect this package could not follow,
 	// as distinct from one it refused. An upload streams its body, so there is
 	// nothing to replay at the new location and net/http hands the response back
