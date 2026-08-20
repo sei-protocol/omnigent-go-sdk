@@ -117,7 +117,12 @@ type Event interface {
 	// [UnknownEvent] it is the discriminator this build did not recognise.
 	EventType() string
 
-	// isEvent seals the union: only this package can add a variant.
+	// isEvent seals the union, so a variant comes from this package.
+	//
+	// Precisely: a type declaring its own isEvent does not satisfy Event, because
+	// the method is unexported and identity includes the declaring package. A type
+	// embedding an exported variant does satisfy it, promoting this method with
+	// the rest — so this is a strong convention, not a proof.
 	//
 	// The pattern is go/ast's, where Node carries the real methods and Expr, Stmt
 	// and Decl each add an unexported marker — 50 implementations in one file. The
