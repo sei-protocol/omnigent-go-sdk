@@ -97,13 +97,13 @@ func TestDecodeEvent(t *testing.T) {
 	}
 }
 
-// TestEventCoversEveryUnionMember guards the generated dispatch: every member of
+// TestEventCoversEveryUnionMember guards the decoder registry: every member of
 // the server's union must decode to a distinct typed event rather than silently
 // falling through to UnknownEvent.
 func TestEventCoversEveryUnionMember(t *testing.T) {
 	t.Parallel()
 
-	// One representative per family; a member missing from events.gen.go would
+	// One representative per family; a member missing from eventRegistry would
 	// come back as UnknownEvent instead of its own type.
 	types := []string{
 		"response.created", "response.in_progress", "response.completed",
