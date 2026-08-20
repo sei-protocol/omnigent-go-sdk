@@ -10,10 +10,8 @@ upstream Python client in `omnigent-ai/omnigent`, under `sdks/python-client`. Th
 client is an agent-interaction library; this one was a typed transport, and the
 rebuild closes the difference.
 
-Read `doc.go` before changing the public surface, and
-`docs/adr/0001-rebuild-rather-than-reland.md` before changing how the types are
-produced. The ADR records why there is no generator and why that is a one-way
-door.
+Read `doc.go` before changing the public surface. There is no code generator;
+re-adding one is a one-way door.
 
 ## The vendored description is the contract
 

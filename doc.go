@@ -14,8 +14,6 @@
 //
 // There is no turn-loop, transcript-block or tool-dispatch surface. A caller
 // needing those composes them over [Client.Stream] and [Sessions.PostEvent].
-// docs/adr/0001-rebuild-rather-than-reland.md records why this package was
-// rebuilt rather than relanded.
 //
 // The public API returns iter.Seq2, so building against this package needs Go
 // 1.23 or newer. go.mod declares that floor and CI builds it.
