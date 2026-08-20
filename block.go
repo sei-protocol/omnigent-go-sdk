@@ -6,7 +6,7 @@ import "time"
 //
 // Where an [Event] is what the server sent, a Block is what a caller draws. The
 // stream carries deltas, duplicate reports and lifecycle noise that no renderer
-// wants; BlockStream folds those into this smaller set, so a caller writes a
+// wants; [BlockStream] folds those into this smaller set, so a caller writes a
 // switch over what it displays rather than over the wire protocol.
 //
 // Sealed by the same means as [Event]: [BlockContext] is the behaviour every block
@@ -78,7 +78,7 @@ type ToolExecution struct {
 	Arguments map[string]any
 
 	// ArgsSummary is a one-line rendering of Arguments for a compact display, e.g.
-	// "test.py". See FormatToolArgsBrief.
+	// "test.py". See [FormatToolArgsBrief].
 	ArgsSummary string
 
 	// CallID identifies the call, and is what pairs a result to it.
@@ -88,7 +88,7 @@ type ToolExecution struct {
 	AgentName string
 
 	// ExecutedBy is "server" or "client". A client-executed call is one this SDK
-	// ran on the caller's behalf; see ToolRegistry.
+	// ran on the caller's behalf; see [ToolRegistry].
 	ExecutedBy string
 
 	// Output is the tool's output, or nil while the call is still outstanding. A

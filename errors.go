@@ -117,6 +117,34 @@ var (
 	// reasoning and what Go's own rule does instead.
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
 
+	// ErrTurnAlreadyRead reports a second attempt to read one turn.
+	//
+	// Refused rather than repeated: reading again would post the prompt a second
+	// time, and the server would answer both. A caller wanting two turns asks for
+	// two.
+	ErrTurnAlreadyRead = errors.New("this turn was already read")
+
+	// ErrTurnIncomplete reports that the event stream ended before the turn did.
+	//
+	// The turn may still be running server-side. Reported rather than treated as an
+	// end, because a caller reading the sequence as complete would take a partial
+	// answer for the whole one.
+	ErrTurnIncomplete = errors.New("the stream ended before the turn did")
+
+	// ErrToolNotRegistered reports that the agent called a tool this client does
+	// not have.
+	//
+	// The turn is not left parked on it: an output naming the mismatch is posted
+	// anyway, because a server waiting for a call it will never receive reads as a
+	// hung agent rather than as a missing tool.
+	ErrToolNotRegistered = errors.New("no such tool is registered")
+
+	// ErrToolFailed reports that a registered tool returned an error or panicked.
+	//
+	// Its output is posted as the error text, for the same reason: the turn is
+	// parked on the call, so a failing tool still has to answer.
+	ErrToolFailed = errors.New("the tool failed")
+
 	// ErrTurnFailed reports that the server ended a turn without an answer.
 	//
 	// The turn reached the server and the server reported a failure, so the wrapped

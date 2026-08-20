@@ -12,8 +12,13 @@
 // server's cursor, and [Sessions.ChildrenTree] walks a subtree under bounds the
 // caller sets.
 //
-// There is no turn-loop, transcript-block or tool-dispatch surface. A caller
-// needing those composes them over [Client.Stream] and [Sessions.PostEvent].
+// It also carries the turn loop. [Client.Chat] posts a prompt and reads until the
+// turn ends, running the tools in a [ToolRegistry] and answering the approvals the
+// server raises. [BlockStream] folds those events into the [Block] set a renderer
+// switches over, and the transforms in transform.go drop or merge parts of it.
+//
+// Where a turn ends is a caller's choice, because two harness families put it in
+// different places; see [TurnEnd]. The stricter rule is the default.
 //
 // Building against this package needs Go 1.25 or newer. go.mod declares that
 // floor and CI builds it. The floor tracks the consumer rather than the language
@@ -93,6 +98,42 @@
 //
 // The agent and item listings type their payload as heterogeneous, so
 // [Sessions.ListAgents] and [Sessions.ListItems] narrow it by hand.
+//
+// # Turns
+//
+// A turn is one prompt and the events it produces. [Chat.Send] drives one: it
+// subscribes, posts the prompt, and reads until the turn ends.
+//
+// The order matters and is not an implementation detail. The subscription has to
+// exist before the prompt is posted, or the turn can be answered with nobody
+// listening and its events are simply missed. A [Turn] from [Chat.Prompt] is
+// single-use for the same reason a second post is not free: it would be a second
+// turn the caller did not ask for, and the server would answer both.
+//
+// Two things run inside the loop, before the turn's end is read, because the server
+// parks a turn on each of them and the terminal event only follows once they are
+// answered: a client tool call, and an approval request. Both are answered even
+// when they fail — an unregistered tool posts an output naming the mismatch rather
+// than leaving the turn parked, and an approval with no decision is declined.
+//
+// Declining is this package's own behaviour and not a policy. It cannot know what a
+// caller would approve, and approving would run a tool under their identity. A
+// caller with a policy supplies [StreamHooks.OnElicitation].
+//
+// # What upstream has and this package does not
+//
+// The Python client's public surface is the reference for this one, and three of
+// its symbols are deliberately absent rather than pending.
+//
+// LocalServer starts a server process and waits for it to listen. Managing a
+// server's lifecycle is not a client's job in Go, where a caller already has
+// os/exec and a health check, and a helper that owned a subprocess would own its
+// signals and its logs too.
+//
+// QueryResult and QueryStream are the one-shot Responses surface, which threads
+// previous_response_id across calls instead of using a durable session. This
+// package reaches the Sessions API, where the session holds that thread. A caller
+// wanting one-shot semantics creates a session and does not reuse it.
 //
 // # Timeouts
 //
