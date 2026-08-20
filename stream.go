@@ -348,10 +348,11 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 		case lines.Err() != nil:
 			// Join both: callers match ErrStreamInterrupted to decide to
 			// reconcile, and the transport error to decide whether to back off.
-			yield(nil, fmt.Errorf("read stream for session %s: %w",
-				sessionID, errors.Join(lines.Err(), ErrStreamInterrupted)))
+			yield(nil, fmt.Errorf("read stream for session %s: %w%s",
+				sessionID, errors.Join(lines.Err(), ErrStreamInterrupted), skipNote(skipped, delivered, firstSkip)))
 		default:
-			yield(nil, fmt.Errorf("stream for session %s: %w", sessionID, ErrStreamInterrupted))
+			yield(nil, fmt.Errorf("stream for session %s: %w%s",
+				sessionID, ErrStreamInterrupted, skipNote(skipped, delivered, firstSkip)))
 		}
 	}
 }
@@ -538,6 +539,25 @@ func decodeFrame(name, payload string) (Event, bool, error) {
 		return nil, false, err
 	}
 	return event, false, nil
+}
+
+// skipNote appends the decode diagnosis to an ending that is not the sentinel.
+//
+// An interrupted ending and a total decode failure look identical to a caller:
+// nothing was delivered. Only the sentinel branch used to say which it was, and
+// the interrupted ending is the routine one, so the branch that fires most often
+// was the one that lost the reason. Without it a retyped field reads as a
+// transport fault, and the documented recovery — snapshot, resubscribe — skips
+// every frame again.
+//
+// Empty when frames were delivered, because then the ending is about the
+// transport and not about decoding.
+func skipNote(skipped int, delivered bool, firstSkip error) string {
+	if skipped == 0 || delivered {
+		return ""
+	}
+	return fmt.Sprintf(" (delivered nothing; skipped all %d frames it carried, first: %v)",
+		skipped, firstSkip)
 }
 
 // bodyPreview renders body for an error message, bounded and rune-safe. It sits

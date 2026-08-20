@@ -18,12 +18,16 @@
 // of the server's OpenAPI document and this package's contract of record. No code
 // generator runs, and none is committed.
 //
-// The guard that replaces the generator's own runs in one direction:
-// TestEveryDeclaredFieldExistsInTheSpec walks every exported struct field's JSON
-// tag and fails when the description does not declare that property. So this
-// package cannot claim a field the server does not have. It deliberately does not
-// assert the reverse, because reaching every route is not a goal — the surface is
-// meant to be smaller than the document, not equal to it.
+// Four tests hold the types to the description. Together they check that every
+// exported field names a property the description declares, that its Go type and
+// optionality match what the description says, and that the decoder's variant set
+// equals the description's own discriminator mapping in both directions.
+//
+// What they do not check is presence: a property the description declares and
+// this package omits passes. That is deliberate, because reaching every route is
+// not a goal — the surface is meant to be smaller than the document, not equal to
+// it. So this package cannot contradict the server about a field it declares, and
+// can be silent about one it does not.
 //
 // The consequence to keep in mind: a route or field the document does not carry is
 // a hand-written contract nothing checks. The events route is registered
@@ -70,8 +74,10 @@
 //
 // # Errors
 //
-// Every error this package returns is matchable with errors.Is against one of
-// the sentinels in errors.go, and a server response also unwraps to [APIError]
+// A server response and every rejected argument are matchable with errors.Is
+// against one of the sentinels in errors.go. A transport or codec failure is
+// returned wrapped and matches none of them, so a caller that switches on the
+// sentinels needs a default arm. A server response also unwraps to [APIError]
 // with errors.As for the status, the server's error code, and the X-Request-Id
 // to quote when reporting it. [ErrInvalidArgument] is the odd one out: it means
 // this package rejected the call before sending anything.
@@ -124,8 +130,11 @@
 // The stream is live-tail only. There is no resume: the server emits no SSE
 // id: field, honours no Last-Event-ID, and drops events published while nobody
 // is subscribed. When a stream ends with [ErrStreamInterrupted] or
-// [ErrStreamIdle], recover by fetching the snapshot with the session snapshot route,
+// [ErrStreamIdle], recover by fetching the session snapshot,
 // opening a fresh stream, and deduping persisted items by id. Reconnection is
 // routine rather than exceptional — some deployments cap HTTP stream duration at
 // a few minutes.
+//
+// This package does not reach the snapshot route yet; call it directly until the
+// session surface lands.
 package omnigent

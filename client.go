@@ -77,6 +77,9 @@ type Client struct {
 	stream      *http.Client
 	header      http.Header
 	idleTimeout time.Duration
+	// ownsTransport records that [New] built the transport, so [Client.Close]
+	// drains only a pool this package created.
+	ownsTransport bool
 }
 
 // config is the state an [Option] writes. It is unexported on purpose: an
@@ -193,6 +196,7 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 	}
 	client := &Client{baseURL: parsed, header: cfg.header, idleTimeout: cfg.idleTimeout}
 	base := cfg.httpClient
+	client.ownsTransport = base == nil
 	if base == nil {
 		timeout := cfg.unaryTimeout
 		if timeout == 0 {
@@ -394,6 +398,31 @@ func redactURL(u *url.URL) string {
 	scrubbed := *u
 	scrubbed.User = nil
 	return scrubbed.String()
+}
+
+// Close releases the connections this client holds open.
+//
+// [New] gives each client its own connection pool, so a program that constructs
+// one client per tenant or per credential refresh accumulates idle connections
+// and the goroutines that serve them — on both ends, until the server's own idle
+// timeout expires. Sharing one client is still the right shape, and this is the
+// lever for the cases where that is not possible.
+//
+// It does not cancel a stream in flight: a subscription ends when its caller
+// stops ranging or its context is done, not when the pool is drained. Calling
+// Close on a client still in use is safe, and later calls simply open new
+// connections.
+//
+// A client supplied through [WithHTTPClient] is the caller's to manage, so its
+// transport is left alone. Close returns nil in that case, and always: it is an
+// error return so that a future release can report one without breaking callers.
+func (c *Client) Close() error {
+	if !c.ownsTransport {
+		return nil
+	}
+	// One transport backs both clients, so draining either drains the pool.
+	c.unary.CloseIdleConnections()
+	return nil
 }
 
 // WithHTTPClient makes the Client issue its requests through httpClient.

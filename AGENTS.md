@@ -10,14 +10,19 @@ upstream Python client in `omnigent-ai/omnigent`, under `sdks/python-client`. Th
 client is an agent-interaction library; this one was a typed transport, and the
 rebuild closes the difference.
 
-Read `doc.go` before changing the public surface.
+Read `doc.go` before changing the public surface, and
+`docs/adr/0001-rebuild-rather-than-reland.md` before changing how the types are
+produced. The ADR records why there is no generator and why that is a one-way
+door.
 
 ## The vendored description is the contract
 
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
-- Declare only fields that document declares. `TestEveryDeclaredFieldExistsInTheSpec`
-  enforces this over every exported type.
+- Declare only fields the document declares, with the type and optionality it
+  declares. Four conformance tests check every exported type the decoder reaches.
+  They do not check presence: omitting a property the document declares passes,
+  deliberately.
 - Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
   fail when the two disagree, and that is deliberate.
 - Refresh the description on purpose, and record the source commit in
@@ -25,6 +30,9 @@ Read `doc.go` before changing the public surface.
 - Re-resolve upstream's `refs/heads/main` before trusting a local checkout.
   Upstream moves more than once a day, and `openapi.json` moves independently of
   the Python client beside it.
+- Add a file to `NOTICE` when you copy an upstream schema or property description
+  into it. It names `types.go` and `event.go` today, and that list is
+  exhaustive by measurement, not by convention. Nothing checks it for you.
 
 This module runs no code generator. Do not add one. The previous one decided the
 shape of the public surface, which is what this rebuild removes.
@@ -38,8 +46,9 @@ bin/check.sh
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
 Run it before opening a pull request, and report what it said.
 
-The module has no dependencies. Keep it that way unless a dependency earns its
-place, because every one of them raises the language floor this module can claim.
+The module has no dependencies. Adding one needs explicit human approval. A
+dependency's own `go` directive sets a floor this module cannot declare below, so
+one dependency decides who is able to import this package.
 
 ## Releases
 
@@ -47,7 +56,9 @@ place, because every one of them raises the language floor this module can claim
 Release.** No label gates that path. A published version is immutable: the module
 proxy serves it, and `sum.golang.org` has recorded its hash.
 
-Do not change `version.json` as part of an ordinary change.
+Do not change `version.json`. A release is its own pull request and needs
+explicit human approval. No version bump here is incidental: the merge is
+the release.
 
 ## Style
 

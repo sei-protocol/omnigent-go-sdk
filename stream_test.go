@@ -1249,3 +1249,51 @@ func TestStreamOnSubscribedDescribesItsSubscription(t *testing.T) {
 			hook.Type.In(1))
 	}
 }
+
+// TestUnsentinelledStreamStillNamesATotalDecodeFailure pins the diagnosis on the
+// ending that fires most.
+//
+// A stream that stops without [DONE] is routine: deployments cap stream
+// duration. If every frame also failed to decode, the caller sees nothing
+// delivered and a bare ErrStreamInterrupted, and the documented recovery is to
+// resubscribe — which skips every frame again, in a loop, with no signal naming
+// the cause.
+func TestUnsentinelledStreamStillNamesATotalDecodeFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for range 3 {
+			// A known discriminator whose body contradicts the schema, which is
+			// the drift the package's own docs name as realistic.
+			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":12345}\n\n"))
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// No [DONE]: the body just ends.
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var got error
+	for _, err := range client.Stream(context.Background(), "conv_1", StreamOptions{}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if got == nil {
+		t.Fatal("Stream yielded no error for a stream that delivered nothing")
+	}
+	if !errors.Is(got, ErrStreamInterrupted) {
+		t.Errorf("error = %v, want it to wrap ErrStreamInterrupted", got)
+	}
+	if !strings.Contains(got.Error(), "skipped all 3 frames") {
+		t.Errorf("error does not say every frame was skipped, so a caller cannot tell\n"+
+			"a decode failure from a transport fault:\n  %v", got)
+	}
+}
