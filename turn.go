@@ -20,8 +20,16 @@ const (
 	// This is the zero value on purpose. A harness this package does not recognise
 	// gets the stricter rule, because the two mistakes do not cost the same: taking
 	// a lifecycle terminal early hands the caller a partial answer it believes is
-	// whole, while waiting for an edge that never comes costs a turn that runs to
-	// its deadline — a failure a caller already knows how to see.
+	// whole, while waiting for an edge that never comes blocks the read.
+	//
+	// Blocks, not times out. The server's heartbeat keeps the stream's idle
+	// watchdog fed, so the wrong choice here produces no error of its own: give
+	// [Chat.Send] a context with a deadline, because that deadline is the only
+	// signal this mistake generates.
+	//
+	// The symptom is a turn that never ends while the session's status events carry
+	// no response id. That means the harness is in-process, and
+	// [TurnEndsOnResponseLifecycle] is the rule it wants.
 	TurnEndsOnIdleStatus TurnEnd = iota
 
 	// TurnEndsOnResponseLifecycle ends a turn on response.completed,
@@ -65,6 +73,10 @@ type turnTracker struct {
 	end   TurnEnd
 	prior map[string]bool
 
+	// sessionID is the session this turn is reading, so an edge belonging to
+	// another session on the same stream can be told apart from this turn's.
+	sessionID string
+
 	// anchor is the identifier the send returned, and what an echo is matched
 	// against. Empty until a caller anchors the turn.
 	anchor string
@@ -90,11 +102,27 @@ type turnTracker struct {
 	failure error
 }
 
-func newTurnTracker(opts TurnOptions) *turnTracker {
+func newTurnTracker(opts TurnOptions, sessionID string) *turnTracker {
 	return &turnTracker{
-		end:   opts.End,
-		prior: maps.Clone(opts.PriorResponseIDs),
+		end:       opts.End,
+		prior:     maps.Clone(opts.PriorResponseIDs),
+		sessionID: sessionID,
 	}
+}
+
+// describesThisSession reports whether a status edge is about the session this turn
+// is reading.
+//
+// A sub-agent's events are mirrored into an ancestor's stream — which is why
+// [Sessions.ResolveElicitation] has to be told which session a request names — so
+// an edge on this stream is not necessarily this session's. A child's idle edge
+// names the child's response, and taken as this turn's it ends the read against
+// work that was never this turn's.
+//
+// An edge naming no session is taken: the server reports a session-level fault that
+// way, and refusing it would drop the failure a caller is waiting on.
+func (t *turnTracker) describesThisSession(conversationID string) bool {
+	return conversationID == "" || t.sessionID == "" || conversationID == t.sessionID
 }
 
 // anchorOn names the identifier the server will echo for this turn's prompt.
@@ -151,6 +179,9 @@ func (t *turnTracker) crossBoundary(e SessionInputConsumedEvent) {
 // reports a session-level fault — a sandbox that never launched among them — and
 // before the boundary that is precisely the failure a caller is waiting on.
 func (t *turnTracker) observeStatus(e SessionStatusEvent) {
+	if !t.describesThisSession(e.ConversationID) {
+		return
+	}
 	if e.Status == SessionStatusEventStatusFailed {
 		t.observeFailedStatus(e)
 		return
@@ -194,6 +225,12 @@ func (t *turnTracker) observeFailedStatus(e SessionStatusEvent) {
 // prompt reached the harness. The prior check is the one the idle path also makes:
 // a response live before this turn's prompt can complete inside this window, and
 // its event is otherwise indistinguishable from this turn's.
+//
+// The first terminal naming this turn's response ends it. Whether one turn can
+// reach a terminal response more than once — a tool loop emitting one per
+// iteration — is not something the vendored description states, and this package
+// does not assume it either way. If it can, this ends the turn at the first, and
+// the fix is a server-side statement of the contract rather than a guess here.
 func (t *turnTracker) observeResponseTerminal(responseID string, detail error) {
 	if t.end != TurnEndsOnResponseLifecycle || !t.crossed || responseID == "" || t.prior[responseID] {
 		return
@@ -215,7 +252,7 @@ func (t *turnTracker) observeResponseTerminal(responseID string, detail error) {
 // address next is the caller's decision, not this package's.
 func (t *turnTracker) observeSuperseded(e SessionSupersededEvent) {
 	t.fail(fmt.Errorf("%w: the session was superseded; its conversation is now %s",
-		ErrTurnSuperseded, e.TargetConversationID))
+		ErrTurnSuperseded, sanitizeForError(e.TargetConversationID, maxRequestIDRunes)))
 }
 
 // statusDetail renders a failed edge's reason, which is why a caller watches this

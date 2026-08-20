@@ -33,7 +33,7 @@ func TestCrossBoundaryMatchesEitherIdentifier(t *testing.T) {
 	t.Parallel()
 
 	t.Run("item id", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.anchorOn("item_1")
 		tr.crossBoundary(consumed("item_1", nil))
 		if !tr.crossed {
@@ -45,7 +45,7 @@ func TestCrossBoundaryMatchesEitherIdentifier(t *testing.T) {
 	})
 
 	t.Run("pending id drains into an item", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.anchorOn("pending_1")
 		pending := "pending_1"
 		tr.crossBoundary(consumed("item_9", &pending))
@@ -59,7 +59,7 @@ func TestCrossBoundaryMatchesEitherIdentifier(t *testing.T) {
 	})
 
 	t.Run("another message's echo does not cross", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.anchorOn("pending_1")
 		tr.crossBoundary(consumed("item_9", nil))
 		if tr.crossed {
@@ -76,7 +76,7 @@ func TestCrossBoundaryMatchesEitherIdentifier(t *testing.T) {
 func TestCrossBoundaryNeedsAnAnchorFirst(t *testing.T) {
 	t.Parallel()
 
-	tr := newTurnTracker(TurnOptions{})
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
 	tr.crossBoundary(consumed("", nil))
 	if tr.crossed {
 		t.Error("an unanchored turn crossed the boundary on an empty echo")
@@ -91,7 +91,7 @@ func TestObserveStatusEndsOnlyOnAnIdBearingIdleAfterTheBoundary(t *testing.T) {
 	id := "resp_1"
 
 	t.Run("before the boundary", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, &id, nil))
 		if tr.ended() {
 			t.Error("an idle edge before the boundary ended the turn")
@@ -99,7 +99,7 @@ func TestObserveStatusEndsOnlyOnAnIdBearingIdleAfterTheBoundary(t *testing.T) {
 	})
 
 	t.Run("carrying no response id", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.anchorOn("item_1")
 		tr.crossBoundary(consumed("item_1", nil))
 		tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, nil, nil))
@@ -109,7 +109,7 @@ func TestObserveStatusEndsOnlyOnAnIdBearingIdleAfterTheBoundary(t *testing.T) {
 	})
 
 	t.Run("after the boundary, naming a response", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{})
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
 		tr.anchorOn("item_1")
 		tr.crossBoundary(consumed("item_1", nil))
 		tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, &id, nil))
@@ -129,7 +129,7 @@ func TestObserveStatusIgnoresAnIdleEdgeForAResponseThatPredatesTheTurn(t *testin
 	t.Parallel()
 
 	old := "resp_old"
-	tr := newTurnTracker(TurnOptions{PriorResponseIDs: map[string]bool{old: true}})
+	tr := newTurnTracker(TurnOptions{PriorResponseIDs: map[string]bool{old: true}}, "conv_1")
 	tr.anchorOn("item_1")
 	tr.crossBoundary(consumed("item_1", nil))
 	tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, &old, nil))
@@ -145,7 +145,7 @@ func TestObserveStatusIgnoresAFailureThatPredatesTheTurn(t *testing.T) {
 	t.Parallel()
 
 	old := "resp_old"
-	tr := newTurnTracker(TurnOptions{PriorResponseIDs: map[string]bool{old: true}})
+	tr := newTurnTracker(TurnOptions{PriorResponseIDs: map[string]bool{old: true}}, "conv_1")
 	tr.anchorOn("item_1")
 	tr.crossBoundary(consumed("item_1", nil))
 	tr.observeStatus(statusEvent(SessionStatusEventStatusFailed, &old, &ErrorDetail{Message: "old"}))
@@ -160,7 +160,7 @@ func TestObserveStatusIgnoresAnIdBearingFailureBeforeTheBoundary(t *testing.T) {
 	t.Parallel()
 
 	id := "resp_1"
-	tr := newTurnTracker(TurnOptions{})
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
 	tr.observeStatus(statusEvent(SessionStatusEventStatusFailed, &id, &ErrorDetail{Message: "not ours"}))
 	if tr.ended() {
 		t.Error("a failure naming a response ended a turn that had not spoken")
@@ -174,7 +174,7 @@ func TestObserveStatusIgnoresAnIdBearingFailureBeforeTheBoundary(t *testing.T) {
 func TestObserveStatusTakesASessionLevelFailureBeforeTheBoundary(t *testing.T) {
 	t.Parallel()
 
-	tr := newTurnTracker(TurnOptions{})
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
 	tr.observeStatus(statusEvent(SessionStatusEventStatusFailed, nil,
 		&ErrorDetail{Code: "sandbox_launch_failed", Message: "no sandbox"}))
 	if !tr.ended() {
@@ -200,7 +200,7 @@ func TestObserveResponseTerminalBelongsToTheLifecycleModeOnly(t *testing.T) {
 	}
 
 	t.Run("idle-status mode ignores it", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{End: TurnEndsOnIdleStatus})
+		tr := newTurnTracker(TurnOptions{End: TurnEndsOnIdleStatus}, "conv_1")
 		cross(tr)
 		tr.observeResponseTerminal("resp_1", nil)
 		if tr.ended() {
@@ -209,7 +209,7 @@ func TestObserveResponseTerminalBelongsToTheLifecycleModeOnly(t *testing.T) {
 	})
 
 	t.Run("lifecycle mode takes it", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle})
+		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle}, "conv_1")
 		cross(tr)
 		tr.observeResponseTerminal("resp_1", nil)
 		if tr.id != "resp_1" {
@@ -221,7 +221,7 @@ func TestObserveResponseTerminalBelongsToTheLifecycleModeOnly(t *testing.T) {
 		tr := newTurnTracker(TurnOptions{
 			End:              TurnEndsOnResponseLifecycle,
 			PriorResponseIDs: map[string]bool{"resp_old": true},
-		})
+		}, "conv_1")
 		cross(tr)
 		tr.observeResponseTerminal("resp_old", nil)
 		if tr.ended() {
@@ -230,7 +230,7 @@ func TestObserveResponseTerminalBelongsToTheLifecycleModeOnly(t *testing.T) {
 	})
 
 	t.Run("lifecycle mode needs the boundary", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle})
+		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle}, "conv_1")
 		tr.observeResponseTerminal("resp_1", nil)
 		if tr.ended() {
 			t.Error("a lifecycle terminal ended a turn that had not spoken")
@@ -238,7 +238,7 @@ func TestObserveResponseTerminalBelongsToTheLifecycleModeOnly(t *testing.T) {
 	})
 
 	t.Run("a failed lifecycle terminal records the turn it names", func(t *testing.T) {
-		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle})
+		tr := newTurnTracker(TurnOptions{End: TurnEndsOnResponseLifecycle}, "conv_1")
 		cross(tr)
 		tr.observeResponseTerminal("resp_1", ErrTurnFailed)
 		if tr.id != "" {
@@ -259,7 +259,7 @@ func TestTheZeroValueTakesTheStricterRule(t *testing.T) {
 	if opts.End != TurnEndsOnIdleStatus {
 		t.Fatal("the zero value is not the stricter rule")
 	}
-	tr := newTurnTracker(opts)
+	tr := newTurnTracker(opts, "conv_1")
 	tr.anchorOn("item_1")
 	tr.crossBoundary(consumed("item_1", nil))
 	tr.observeResponseTerminal("resp_1", nil)
@@ -274,7 +274,7 @@ func TestFailKeepsTheFirstCause(t *testing.T) {
 	t.Parallel()
 
 	first := errors.New("first")
-	tr := newTurnTracker(TurnOptions{})
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
 	tr.fail(first)
 	tr.fail(errors.New("second"))
 	if !errors.Is(tr.failure, first) {
@@ -287,7 +287,7 @@ func TestFailKeepsTheFirstCause(t *testing.T) {
 func TestObserveSupersededFailsLoudly(t *testing.T) {
 	t.Parallel()
 
-	tr := newTurnTracker(TurnOptions{})
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
 	tr.observeSuperseded(SessionSupersededEvent{
 		Type:                 "session.superseded",
 		ConversationID:       "conv_1",
@@ -307,7 +307,7 @@ func TestPriorResponseIDsAreCopied(t *testing.T) {
 	t.Parallel()
 
 	prior := map[string]bool{"resp_old": true}
-	tr := newTurnTracker(TurnOptions{PriorResponseIDs: prior})
+	tr := newTurnTracker(TurnOptions{PriorResponseIDs: prior}, "conv_1")
 	delete(prior, "resp_old")
 	prior["resp_1"] = true
 
@@ -317,5 +317,90 @@ func TestPriorResponseIDsAreCopied(t *testing.T) {
 	tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, &id, nil))
 	if tr.id != "resp_1" {
 		t.Error("a mutation after the turn started changed which responses count")
+	}
+}
+
+// TestAnotherSessionsStatusEdgeDoesNotEndThisTurn pins the fourth fact a turn needs.
+//
+// A sub-agent's events are mirrored into an ancestor's stream — which is why
+// resolving an elicitation has to be told which session named it — so an edge on
+// this stream is not necessarily this session's. Measured before the filter existed:
+// a child's idle edge ended the turn against work that was never this turn's, and
+// the caller read half an answer with a nil error.
+func TestAnotherSessionsStatusEdgeDoesNotEndThisTurn(t *testing.T) {
+	t.Parallel()
+
+	child := func(status string, responseID *string, detail *ErrorDetail) SessionStatusEvent {
+		e := statusEvent(status, responseID, detail)
+		e.ConversationID = "conv_child"
+		return e
+	}
+	crossed := func() *turnTracker {
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
+		tr.anchorOn("item_1")
+		tr.crossBoundary(consumed("item_1", nil))
+		return tr
+	}
+
+	t.Run("a child's idle edge", func(t *testing.T) {
+		tr := crossed()
+		id := "resp_of_the_subagent"
+		tr.observeStatus(child(SessionStatusEventStatusIdle, &id, nil))
+		if tr.ended() {
+			t.Errorf("a child session's idle edge ended this turn with id %q", tr.id)
+		}
+	})
+
+	t.Run("a child's failure naming no response", func(t *testing.T) {
+		tr := crossed()
+		tr.observeStatus(child(SessionStatusEventStatusFailed, nil,
+			&ErrorDetail{Code: "spawn_failed", Message: "the sub-agent sandbox never launched"}))
+		if tr.ended() {
+			t.Errorf("a child's setup failure ended this turn: %v", tr.failure)
+		}
+	})
+
+	t.Run("this session's edges still count", func(t *testing.T) {
+		tr := crossed()
+		id := "resp_1"
+		tr.observeStatus(statusEvent(SessionStatusEventStatusIdle, &id, nil))
+		if tr.id != "resp_1" {
+			t.Errorf("the filter rejected this session's own edge; id = %q", tr.id)
+		}
+	})
+
+	t.Run("an edge naming no session is taken", func(t *testing.T) {
+		// The server reports a session-level fault this way, and refusing it would
+		// drop the failure a caller is waiting on.
+		tr := newTurnTracker(TurnOptions{}, "conv_1")
+		e := statusEvent(SessionStatusEventStatusFailed, nil, &ErrorDetail{Message: "no sandbox"})
+		e.ConversationID = ""
+		tr.observeStatus(e)
+		if !tr.ended() {
+			t.Error("a session-level failure with no session named was dropped")
+		}
+	})
+}
+
+// TestSupersededNamesTheReplacementSafely pins that a server-chosen id cannot forge
+// a log line through this error.
+func TestSupersededNamesTheReplacementSafely(t *testing.T) {
+	t.Parallel()
+
+	tr := newTurnTracker(TurnOptions{}, "conv_1")
+	tr.observeSuperseded(SessionSupersededEvent{
+		Type:                 "session.superseded",
+		ConversationID:       "conv_1",
+		TargetConversationID: "conv_2\r\nFATAL: forged" + strings.Repeat("A", 4000),
+	})
+	msg := tr.failure.Error()
+	if strings.ContainsAny(msg, "\r\n") {
+		t.Errorf("the error carries a control byte: %q", msg)
+	}
+	if len(msg) > 400 {
+		t.Errorf("the error is %d bytes; the id is unbounded", len(msg))
+	}
+	if !strings.Contains(msg, "conv_2") {
+		t.Errorf("the replacement conversation was lost: %q", msg)
 	}
 }

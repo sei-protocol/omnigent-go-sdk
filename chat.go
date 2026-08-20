@@ -135,7 +135,7 @@ func (t *Turn) claim() bool {
 func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) bool) {
 	run := &turnRun{
 		chat:       c,
-		tracker:    newTurnTracker(c.opts.Turn),
+		tracker:    newTurnTracker(c.opts.Turn, c.sessionID),
 		dispatched: map[string]bool{},
 		yield:      yield,
 	}
