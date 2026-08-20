@@ -97,7 +97,7 @@ type ModelUsage struct {
 	// model's turns were priced** (same "priced ⟺ key present" contract as the session total);
 	// nil when the model is unpriced, so the sum of priced per-model costs equals the session
 	// total_cost_usd.
-	TotalCostUsd *float64 `json:"total_cost_usd,omitempty"`
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 
 	// Cumulative total tokens (counts cache buckets too, as the harness reports), e.g. 15400.
 	// nil when not recorded.
@@ -242,7 +242,7 @@ type Usage struct {
 
 	// Authoritative per-turn cost in USD reported directly by the harness/provider (e.g.
 	// GitHub Copilot's AI-credit total).
-	CostUsd *float64 `json:"cost_usd,omitempty"`
+	CostUSD *float64 `json:"cost_usd,omitempty"`
 
 	// Number of input (prompt) tokens consumed.
 	InputTokens *int `json:"input_tokens,omitempty"`

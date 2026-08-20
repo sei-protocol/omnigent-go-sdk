@@ -2,9 +2,13 @@ package omnigent
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -59,7 +63,7 @@ var schemaFor = map[string]string{
 	"SessionHeartbeatEvent":               "SessionHeartbeatEvent",
 	"SessionInputConsumedEvent":           "SessionInputConsumedEvent",
 	"SessionInterruptedEvent":             "SessionInterruptedEvent",
-	"SessionMcpStartupEvent":              "SessionMcpStartupEvent",
+	"SessionMCPStartupEvent":              "SessionMcpStartupEvent",
 	"SessionModelEvent":                   "SessionModelEvent",
 	"SessionModelOptionsEvent":            "SessionModelOptionsEvent",
 	"SessionPresenceEvent":                "SessionPresenceEvent",
@@ -402,4 +406,123 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestEveryDeclaredEnumValueHasAConstant ties enums.go to the description.
+//
+// The fields themselves stay plain strings so an older client keeps decoding a
+// value the server added. That makes the constants a convenience rather than a
+// contract, and a convenience with a missing entry is worse than none: a caller
+// comparing against a name that does not exist does not compile, and one
+// comparing against a stale literal silently never matches.
+func TestEveryDeclaredEnumValueHasAConstant(t *testing.T) {
+	schemas := loadSpec(t)
+	constants := declaredConstants(t)
+	declared := 0
+
+	for goName, schemaName := range schemaFor {
+		node, ok := schemas[schemaName].(map[string]any)
+		if !ok {
+			continue
+		}
+		props, _ := node["properties"].(map[string]any)
+		for wire, raw := range props {
+			if wire == "type" {
+				continue // the discriminator is the Go type itself
+			}
+			prop, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			inner, _ := unwrapProperty(prop)
+			if inner == nil {
+				inner = prop
+			}
+			values, ok := inner["enum"].([]any)
+			if !ok {
+				continue
+			}
+			for _, v := range values {
+				value, ok := v.(string)
+				if !ok {
+					continue
+				}
+				declared++
+				name := goName + goFieldName(wire) + goFieldName(value)
+				got, ok := constants[name]
+				switch {
+				case !ok:
+					t.Errorf("schema %s declares %q for %q, so enums.go needs %s",
+						schemaName, value, wire, name)
+				case got != value:
+					t.Errorf("%s is %q, but schema %s declares %q for %q",
+						name, got, schemaName, value, wire)
+				}
+			}
+		}
+	}
+	if declared == 0 {
+		t.Fatal("found no enum values to check; the walk is not reaching the schemas")
+	}
+	t.Logf("checked %d declared enum values", declared)
+}
+
+// declaredConstants parses enums.go and returns the constant names it declares,
+// mapped to their values.
+//
+// It parses rather than string-matches, because gofmt aligns a const block and a
+// literal " = " never survives that. It reads the source rather than reflecting,
+// because an untyped string constant leaves no runtime handle to enumerate — the
+// cost of keeping the fields plain strings, and the reason this test exists.
+func declaredConstants(t *testing.T) map[string]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "enums.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse enums.go: %v", err)
+	}
+
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != len(value.Values) {
+				continue
+			}
+			for i, name := range value.Names {
+				lit, ok := value.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				unquoted, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					continue
+				}
+				out[name.Name] = unquoted
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("enums.go declares no string constants")
+	}
+	return out
+}
+
+// goFieldName renders a wire name the way this package's identifiers do.
+func goFieldName(wire string) string {
+	initialisms := map[string]string{"id": "ID", "url": "URL", "api": "API", "mcp": "MCP", "llm": "LLM"}
+	var b strings.Builder
+	for _, part := range strings.FieldsFunc(wire, func(r rune) bool { return r == '_' || r == '-' || r == ' ' }) {
+		if upper, ok := initialisms[strings.ToLower(part)]; ok {
+			b.WriteString(upper)
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+	}
+	return b.String()
 }

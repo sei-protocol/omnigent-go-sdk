@@ -184,7 +184,7 @@ var eventRegistry = map[string]func([]byte) (Event, error){
 	"session.heartbeat":                     decodeInto[SessionHeartbeatEvent],
 	"session.input.consumed":                decodeInto[SessionInputConsumedEvent],
 	"session.interrupted":                   decodeInto[SessionInterruptedEvent],
-	"session.mcp_startup":                   decodeInto[SessionMcpStartupEvent],
+	"session.mcp_startup":                   decodeInto[SessionMCPStartupEvent],
 	"session.model":                         decodeInto[SessionModelEvent],
 	"session.model_options":                 decodeInto[SessionModelOptionsEvent],
 	"session.presence":                      decodeInto[SessionPresenceEvent],
@@ -799,10 +799,10 @@ type SessionInterruptedEvent struct {
 
 func (SessionInterruptedEvent) isEvent() {}
 
-// SessionMcpStartupEvent is the wire event "session.mcp_startup".
+// SessionMCPStartupEvent is the wire event "session.mcp_startup".
 //
 // Per-MCP-server startup progress for a native harness session.
-type SessionMcpStartupEvent struct {
+type SessionMCPStartupEvent struct {
 	// Session identifier, e.g. "conv_abc123".
 	ConversationID string `json:"conversation_id"`
 	SequenceNumber *int   `json:"sequence_number,omitempty"`
@@ -817,7 +817,7 @@ type SessionMcpStartupEvent struct {
 	Type string `json:"type"`
 }
 
-func (SessionMcpStartupEvent) isEvent() {}
+func (SessionMCPStartupEvent) isEvent() {}
 
 // SessionModelEvent is the wire event "session.model".
 //
@@ -1100,7 +1100,7 @@ type SessionUsageEvent struct {
 
 	// Cumulative session spend in USD after this update, e.g. 0.42 — the server-computed total
 	// the cost-budget policy gates on.
-	TotalCostUsd *float64 `json:"total_cost_usd,omitempty"`
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 
 	// Type is always "session.usage".
 	Type string `json:"type"`
