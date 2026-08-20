@@ -439,7 +439,11 @@ func (s *blockState) foldMessage(item map[string]any) {
 		s.closeText()
 		return
 	}
-	s.inText = ""
+	// The buffered deltas are not discarded: below the flush threshold they are the
+	// only [TextChunk] a live reader gets, and clearing them here meant a short
+	// answer streamed nothing at all. closeText flushes them, then reports the
+	// item's own text — which is the server's complete statement of the section and
+	// so the authoritative [TextDone].
 	s.fullText = text
 	s.closeText()
 }

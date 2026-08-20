@@ -124,12 +124,16 @@ func OnlyAgent(agent string) Transform {
 	}
 }
 
-// SkipIntermediateEnds keeps only the last [ResponseEndBlock] of a turn.
+// SkipIntermediateEnds keeps only the last [ResponseEndBlock] of a sequence.
 //
-// A tool loop reaches a terminal response once per iteration, so a caller
-// rendering every end draws the turn as finished several times. This holds each
-// end back until something follows it: a block after an end proves that end was
-// intermediate, and the end still held when the sequence stops is the real one.
+// One turn reaches one terminal response, so this is a no-op on a single turn. It
+// is for a sequence that carries several — a [Client.Stream] read across more than
+// one turn, or a replayed transcript — where a caller rendering every end draws the
+// work as finished several times.
+//
+// Each end is held back until something follows it: a block after an end proves
+// that end was intermediate, and the end still held when the sequence stops is the
+// real one.
 //
 // The cost is that the final end arrives only when the sequence ends, which for a
 // live stream is the same moment.
@@ -162,14 +166,15 @@ func SkipIntermediateEnds() Transform {
 	}
 }
 
-// MergeTextAcrossIterations joins the [TextDone] blocks between terminal responses
-// into one.
+// MergeTextAcrossIterations joins the [TextDone] blocks of one response into one.
 //
-// It flushes at each [ResponseEndBlock], so on a sequence carrying one end per
-// tool-loop iteration it reports one answer per iteration — which is what
-// [SkipIntermediateEnds] is for. Compose them in that order to get a single answer:
+// A response finishes a text section per message item, and a tool loop produces
+// several, so a caller rendering a finished transcript otherwise draws the answer in
+// as many pieces as the agent spoke. This reports it once.
 //
-//	Pipe(seq, SkipIntermediateEnds(), MergeTextAcrossIterations())
+// It flushes at each [ResponseEndBlock], which is one per turn. On a sequence
+// spanning several turns that is one answer per turn, which is usually what a
+// caller wants; [SkipIntermediateEnds] first would join them into one.
 //
 // [TextChunk] passes through untouched, so live rendering is unaffected. A sequence
 // that ends with no terminal response still reports what it gathered, using the

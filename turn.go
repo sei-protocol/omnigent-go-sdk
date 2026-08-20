@@ -226,11 +226,15 @@ func (t *turnTracker) observeFailedStatus(e SessionStatusEvent) {
 // a response live before this turn's prompt can complete inside this window, and
 // its event is otherwise indistinguishable from this turn's.
 //
-// The first terminal naming this turn's response ends it. Whether one turn can
-// reach a terminal response more than once — a tool loop emitting one per
-// iteration — is not something the vendored description states, and this package
-// does not assume it either way. If it can, this ends the turn at the first, and
-// the fix is a server-side statement of the contract rather than a guess here.
+// The terminal naming this turn's response ends it. A tool loop's passes happen
+// inside that one response — which is why the response id holds across them, and why
+// [ToolGroup.Iteration] counts passes rather than responses — so there is one
+// terminal to read.
+//
+// The description states no status that would distinguish a pass's terminal from a
+// turn's, so if a deployment ever emitted one per pass, nothing here could tell them
+// apart and this would end the turn at the first. That is a contract the server
+// would have to state; it is not something to guess at from this side.
 func (t *turnTracker) observeResponseTerminal(responseID string, detail error) {
 	if t.end != TurnEndsOnResponseLifecycle || !t.crossed || responseID == "" || t.prior[responseID] {
 		return

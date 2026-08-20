@@ -17,6 +17,10 @@
 // server raises. [BlockStream] folds those events into the [Block] set a renderer
 // switches over, and the transforms in transform.go drop or merge parts of it.
 //
+// A caller who wants the answer rather than the sequence uses [Chat.Query], which
+// performs that fold and returns the text and the files, or [Chat.QueryStream] to
+// read the text as it arrives.
+//
 // Where a turn ends is a caller's choice, because two harness families put it in
 // different places; see [TurnEnd]. The stricter rule is the default.
 //
@@ -134,11 +138,7 @@
 // The Python client's public surface is the reference for this one, and two of its
 // symbols are deliberately absent rather than pending. specs/002-upstream-alignment
 // carries the full mapping; this section states only what will not be built.
-//
-// Not listed here, and not yet built: upstream's QueryResult and QueryStream fold a
-// turn into its text and files. A caller composes that today from [BlockStream] and
-// [MergeTextAcrossIterations].
-//
+
 // LocalServer starts a server process and waits for it to listen. Managing a
 // server's lifecycle is not a client's job in Go, where a caller already has
 // os/exec and a health check, and a helper that owned a subprocess would own its

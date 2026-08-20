@@ -457,3 +457,34 @@ func TestABlockCannotBeRewrittenFromOutside(t *testing.T) {
 		t.Errorf("a block marshals an untagged context key: %s", encoded)
 	}
 }
+
+// TestAShortAnswerStillStreams pins that text below the flush threshold reaches a
+// live reader.
+//
+// A message item is the server's complete statement of a section, so it is the
+// authoritative TextDone. Replacing the buffer with it discarded the deltas, and a
+// caller streaming an answer shorter than the threshold saw nothing at all.
+func TestAShortAnswerStillStreams(t *testing.T) {
+	t.Parallel()
+
+	blocks := foldBlocks(t, 0,
+		`{"type":"response.output_text.delta","delta":"short"}`,
+		`{"type":"response.output_item.done","item":{"type":"message","content":`+
+			`[{"type":"output_text","text":"short"}]}}`,
+	)
+	var chunked, done bool
+	for _, block := range blocks {
+		switch block.(type) {
+		case TextChunk:
+			chunked = true
+		case TextDone:
+			done = true
+		}
+	}
+	if !chunked {
+		t.Errorf("a short answer produced no TextChunk: %s", kindsOf(blocks))
+	}
+	if !done {
+		t.Errorf("a short answer produced no TextDone: %s", kindsOf(blocks))
+	}
+}
