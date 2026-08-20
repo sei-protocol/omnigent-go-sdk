@@ -70,6 +70,7 @@ decisions the document cannot carry.
   | closed string to `x-go-type: string` | 81 | one wire enum becoming 81 Go types |
   | schema rename | 2 | `McpServerStartup`, `SessionMcpStartupEvent` |
   | `x-go-type: json.RawMessage` | 1 | deferred decode on `ConversationItem.data` |
+  | drop `additionalProperties: true` | 3 | a catch-all field, and a generated marshaller that ignores `omitempty` |
 
   Generation also needs `skip-prune: true`, because `oapi-codegen` does not read
   the OAS 3.2 `itemSchema` keyword. Without it the generator cannot reach the
@@ -96,9 +97,8 @@ Measured end to end at `oapi-codegen` v2.8.0. The facade compiles and vets clean
 on the generated types. Ten of ten types match field for field. The generator
 emits 53 of 53 event variants.
 
-A throwaway spike produced those numbers, and nothing here carries its code.
-Accepting this record is what would add the stage, the config, and the generated
-package.
+A throwaway spike produced those numbers. The stage, the config and the
+generated package shipped with the change that set this record to Accepted.
 
 ## Consequences
 
@@ -162,43 +162,80 @@ route. `StoreHostHarnessCredentialV1HostsHostIDHarnessesHarnessCredentialPost`
 is a public identifier we would be unable to change, and the 44 path-mangled
 parameter types with it.
 
-**Generate the models and keep the hand-written client.** Rejected: it splits
-the request path across a generated types package and a hand-written caller for
-no gain. The generated `ClientWithResponses` returns typed responses, and
-`HttpRequestDoer` accepts the policy-carrying `*http.Client` this module already
-builds. This module therefore gains the client half at no cost.
+**Generate the models and keep the hand-written client.** Accepted, against what
+this record first argued. `oapi-codegen.yaml` sets `client: false`.
+
+The rejection assumed the generated client cost nothing to carry. Measured after
+the fact: `client: true` emitted 24,188 lines nothing called. Turning it off
+dropped none of the three dependencies, because the models need
+`runtime.JSONMerge` and `openapi_types.File` on their own. Its default doer is a
+bare `&http.Client{}`, which carries none of this module's redirect or credential
+policy. The surface it added was the surface a caller would most easily pick up
+by mistake.
 
 ## What building it corrected
 
-Four claims above did not survive the implementation. They stand as written. A
+Six claims above did not survive the implementation. They stand as written. A
 record that edits its own reasoning afterwards stops being evidence of the
-decision it claims to hold.
+decision it claims to hold. A cross-review found most of what follows; the rest
+came from measuring what the review disputed.
 
-- **The enum transform was undercounted, at 21 sites rather than 81.** Every
-  event variant pins its discriminator with `const`, not `enum`, and the
-  transform tested only for `enum`. Each generated variant then carried its own
-  `Type` type, which `EventType() string` cannot return. The build failed rather
-  than shipping a wrong type, which is milder than the negative above predicts.
+- **"Ten data types" was the spike's sample, not the surface.** The change ships
+  42 aliases. A field-for-field comparison of all 42 against the types they
+  replaced gives 31 identical and 11 differing. Eight of the 11 differ only as
+  `map[string]any` against `map[string]interface{}`, which is one type spelled
+  two ways. Three are real, and in all three the generator is right where the
+  hand-written type was wrong. `PaginatedList.Data` becomes `[]interface{}`,
+  which the document's own description asks for: "Items are heterogeneous ... no
+  single concrete type satisfies all callers." `ReasoningData.Content` and
+  `.Summary` become `[]map[string]string`, which the document declares.
+  `SessionResponse.TerminalLaunchArgs` gains `omitempty`, which its absence from
+  `required` asks for.
+- **"The public surface does not move" is therefore false, and a patch release
+  is the wrong vehicle.** Three exported field types change. They correct a wrong
+  type rather than regress a right one, and they still break a caller at compile
+  time.
+- **A generated marshaller broke `omitempty` on three public types.**
+  `additionalProperties: true` on three schemas produced a catch-all field and a
+  `MarshalJSON` that tests a field against nil and never reads a struct tag. An
+  empty non-nil slice marshalled as `[]` where it had been absent. That is a wire
+  change on a released module, found by the review's dissenter. The seventh
+  transform drops the catch-all, which restores the shape the hand-written types
+  had. Retaining unknown properties is a real improvement and it needs its own
+  change, where someone can fix the marshalling rather than ride it along.
+- **The table above overstates what the enum transform first reached.** It
+  claims 81 sites; the
+  transform as first written matched `enum` only and fired on 21 of them. Every
+  event variant pins its discriminator with `const`, so each generated variant
+  carried its own `Type` type, which `EventType() string` cannot return. The
+  build failed rather than shipping a wrong type, which is milder than the
+  negative above predicts.
 - **`schemaFor` did not retire, and neither did its tests.** The 94-row table
   went. A derivation replaced it: a type declared over `api.Y` names schema `Y`,
   so the declaration is the mapping. It reproduces the old table exactly,
   including all seven divergences. The tests survive with a changed purpose: they
   catch `spec/preprocess.py` stamping the wrong type rather than a hand-authoring
   mistake.
-- **The wire types kept their curated prose.** An alias carries the doc comment
-  above it, so the type-level prose in `types.go` and `session_types.go`
-  survived. Only the field-level comments became upstream's one-line
-  descriptions.
-- **The attribution gate needed widening.** The generated file reproduces 483
-  upstream descriptions, and `TestNoticeNamesEveryFileCarryingUpstreamProse`
-  globbed the root package alone. It reported the attribution as complete while
-  the file carrying the prose went unnamed.
-
-The implementation also added two gates this record did not propose.
-`TestEveryUnionVariantHasAGoType` fails when the document declares an event the
-decoder would return as `UnknownEvent`. The doc-link check now follows an alias
-into `internal/api` rather than going blind at the package boundary.
+- **The wire types kept their curated prose, and `NOTICE` lost them anyway.** An
+  alias carries the doc comment above it, so the type-level prose in `types.go`
+  and `session_types.go` survived — reworded only by lowercasing the description's
+  first letter. The attribution test matched case-sensitively and reported both
+  files as carrying nothing. The change removed them from an Apache-2.0
+  attribution list on that measurement. The matcher now folds case, and `NOTICE`
+  names both files again.
+- **The attribution gate needed widening as well.** The generated file reproduces
+  483 upstream descriptions, and the test globbed the root package alone.
+- **One of the two gates this record claimed to add already existed.**
+  `TestEveryUnionMemberIsRegistered` already read the discriminator mapping and
+  asserted set equality with `eventRegistry` in both directions. The duplicate is
+  gone; the surviving test carries the better doc comment. The doc-link check
+  following an alias into `internal/api` is the one genuinely new gate.
+- **The counts here describe two different documents.** The transform counts and
+  the "53 of 53 event variants" come from a spike against upstream `9d54826e`.
+  The tree pins `179774eb`, which carries 52. `bin/generate.sh` prints the counts
+  it actually applied, and now refuses to run when a transform matches nothing.
 
 Measured after the change: `types.go` 270 lines to 43, `session_types.go` 939 to
-94, `event.go` 1283 to 680, `enums.go` unchanged at 151, and
-`internal/api/api.gen.go` at 29735 generated lines.
+94, `event.go` 1283 to 680, and `enums.go` unchanged at 151.
+`internal/api/api.gen.go` holds 5150 generated lines, not the 30890 this record
+predicted, because the client is off.

@@ -20,14 +20,20 @@ Specifically:
   Go types mirror the document's schemas, and its doc comments reproduce the
   document's own schema and property descriptions.
 
-  event.go and enums.go declare Go types and constants mirroring those schemas,
-  and their doc comments reproduce the document's descriptions.
+  event.go, enums.go, types.go and session_types.go declare Go types and
+  constants mirroring those schemas, and their doc comments reproduce the
+  document's descriptions.
 
 How these files are produced has changed more than once, and it does not change
 what they derive from. The descriptions are the upstream project's whether a
 generator copied them or a person did, so this attribution applies either way.
-A test keeps the list above exhaustive in both directions, over the root package
-and internal/api: see TestNoticeNamesEveryFileCarryingUpstreamProse.
+
+TestNoticeNamesEveryFileCarryingUpstreamProse measures the Go files in the root
+package and in internal/api against the document's descriptions, in both
+directions, and fails when a file carries upstream prose this list omits. The
+measurement is a case-folded substring match, so it is a floor and not a proof:
+a description reworded rather than re-cased passes unseen, and the two spec/
+entries above are outside what it reads. Naming a file stays a judgement.
 
 Attribution notices in the upstream project's NOTICE file that pertain to its
 Python runtime dependencies are omitted here, as this Software contains no part

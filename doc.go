@@ -66,13 +66,17 @@
 // still decodes rather than failing. A switch over those constants therefore
 // needs a default arm.
 //
-// # Hand-authored types
+// # Generated types
 //
-// Every type here is written by hand against spec/openapi.json, a pinned snapshot
-// of the server's OpenAPI document and this package's contract of record. No code
-// generator runs, and none is committed.
+// The wire types come from spec/openapi.json, a pinned snapshot of the server's
+// OpenAPI document and this package's contract of record. bin/generate.sh runs
+// spec/preprocess.py over it and then oapi-codegen, into internal/api. Every
+// type in this package's own files is a one-line declaration over that package,
+// so the field documentation lives in internal/api/api.gen.go and in the
+// document itself, not here. See
+// docs/adr/0001-generate-wire-types-behind-a-facade.md.
 //
-// Six tests hold the types to the description, across five dimensions: the
+// Eight tests hold the types to the description, across five dimensions: the
 // mapping is complete in both directions, every exported field names a property
 // the description declares, its Go type and optionality match, a container's
 // declared value or element type matches, every declared enum value has a
@@ -136,9 +140,9 @@
 // # What upstream has and this package does not
 //
 // The Python client's public surface is the reference for this one, and two of its
-// symbols are deliberately absent rather than pending. specs/002-upstream-alignment
-// carries the full mapping; this section states only what will not be built.
-
+// symbols are deliberately absent rather than pending. This section states what
+// will not be built.
+//
 // LocalServer starts a server process and waits for it to listen. Managing a
 // server's lifecycle is not a client's job in Go, where a caller already has
 // os/exec and a health check, and a helper that owned a subprocess would own its

@@ -58,7 +58,18 @@ def widen_numbers(node) -> int:
 
 
 def drop_collection_pointers(node) -> int:
-    """A nil slice or map is already absent; a pointer to one adds nothing."""
+    """A nil slice or map is already absent; a pointer to one adds nothing.
+
+    Known gap, not a regression: two fields in the document distinguish an empty
+    collection from an absent one. `UpdateSessionRequest.terminal_launch_args`
+    says "a list (including `[]`) replaces the stored value wholesale ... `None`
+    leaves unchanged", and `UpdateProjectRequest.config` says the same of `{}`.
+    Neither is reachable through this module, and neither was before this
+    transform existed: the hand-written types were already plain slices. Fixing
+    it means giving those two fields back their pointers, which changes the
+    public surface, so it belongs in its own change. `setdefault` above is what
+    makes that fix expressible from the document.
+    """
     n = 0
     if isinstance(node, dict):
         for prop in (node.get("properties") or {}).values():
@@ -67,8 +78,8 @@ def drop_collection_pointers(node) -> int:
             branches = [prop] + [b for b in prop.get("anyOf", []) if isinstance(b, dict)]
             for b in branches:
                 if b.get("type") in ("array", "object") or "additionalProperties" in b:
-                    prop["x-go-type-skip-optional-pointer"] = True
-                    n += 1
+                    if prop.setdefault("x-go-type-skip-optional-pointer", True):
+                        n += 1
                     break
         for key, value in node.items():
             if key not in DATA_KEYS:
@@ -112,6 +123,11 @@ def rename_schemas(spec) -> int:
         if fixed != name:
             mapping[name] = fixed
     for old, new in mapping.items():
+        if new in schemas:
+            raise SystemExit(
+                f"rename {old} -> {new} would overwrite the schema already named "
+                f"{new}; the document changed and this stage cannot resolve it"
+            )
         schemas[new] = schemas.pop(old)
     if mapping:
         blob = json.dumps(spec)
@@ -176,23 +192,67 @@ def defer_union_decode(schemas) -> int:
     return 1
 
 
+def drop_open_ended_objects(schemas) -> int:
+    """Stop an open-ended object from growing a catch-all field.
+
+    Three schemas declare `additionalProperties: true`. A generator turns that
+    into `AdditionalProperties map[string]interface{}` plus `Get`, `Set`,
+    `MarshalJSON` and `UnmarshalJSON`. Those arrive as public API here, because
+    the three are aliases rather than defined types, and the generated
+    `MarshalJSON` decides emptiness by testing the field against nil. It never
+    reads a struct tag, so `omitempty` stops working: an empty non-nil slice
+    marshals as `[]` where it used to be absent.
+
+    The hand-written types this module shipped declared no catch-all, so
+    dropping it holds the public surface still. Retaining unknown properties is
+    a real improvement and it belongs in its own change, where the marshalling
+    regression can be dealt with rather than ridden along.
+    """
+    n = 0
+    for schema in schemas.values():
+        if schema.get("additionalProperties") is True:
+            del schema["additionalProperties"]
+            n += 1
+    return n
+
+
 def main() -> int:
-    spec = json.load(open(sys.argv[1]))
+    with open(sys.argv[1], encoding="utf-8") as doc:
+        spec = json.load(doc)
     schemas = spec["components"]["schemas"]
     w = widen_numbers(schemas)
     p = drop_collection_pointers(schemas)
     i = fix_initialisms(schemas)
     e = flatten_enums(schemas)
     u = defer_union_decode(schemas)
+    o = drop_open_ended_objects(schemas)
     r = rename_schemas(spec)
     schemas = spec["components"]["schemas"]
-    json.dump(spec, open(sys.argv[2], "w"), indent=2, sort_keys=True)
-    print(f"  x-go-type float64            : {w}")
-    print(f"  x-go-type-skip-optional-ptr  : {p}")
-    print(f"  x-go-name initialism fixes   : {i}")
-    print(f"  closed strings left string   : {e}")
-    print(f"  union payloads left raw      : {u}")
-    print(f"  schema renames               : {r}")
+    counts = [
+        ("x-go-type float64", w),
+        ("x-go-type-skip-optional-ptr", p),
+        ("x-go-name initialism fixes", i),
+        ("closed strings left string", e),
+        ("union payloads left raw", u),
+        ("catch-all fields dropped", o),
+        ("schema renames", r),
+    ]
+    # A transform that matches nothing has stopped describing the document. It
+    # fails no build, because the generated type is merely wrong in the way it
+    # was wrong before the transform existed: money back to float32, a
+    # collection back behind a pointer. So assert here, where the count is known.
+    for name, count in counts:
+        print(f"  {name:28} : {count}")
+
+    silent = [name for name, count in counts if count == 0]
+    if silent:
+        raise SystemExit(
+            "these transforms matched nothing, so the document's shape moved "
+            "underneath them: " + ", ".join(silent)
+        )
+
+    with open(sys.argv[2], "w", encoding="utf-8") as out:
+        json.dump(spec, out, indent=2, sort_keys=True)
     return 0
 
 

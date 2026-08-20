@@ -6,7 +6,11 @@ package: api
 output: internal/api/api.gen.go
 generate:
   models: true
-  client: true
+  # No client. The facade builds its own requests over a policy-carrying
+  # http.Client, so a generated client is 24188 lines nothing calls. Turning it
+  # off also drops the generated marshallers for the three additionalProperties
+  # types, which ignore struct tags and so break `omitempty` on a public type.
+  client: false
 output-options:
   # ID, not Id. The list this carries knows the common initialisms; the ones it
   # does not know arrive as x-go-name from spec/preprocess.py.

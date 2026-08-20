@@ -17,12 +17,14 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Six conformance tests check every exported type the decoder reaches,
-  across five dimensions.
-  They do not check presence: omitting a property the document declares passes,
-  deliberately.
-- Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
-  fail when the two disagree, and that is deliberate.
+  declares. Eight conformance tests check every exported type the decoder
+  reaches, across five dimensions. They do not check a field's presence: omitting
+  a property the document declares passes, deliberately. They do check an event's
+  presence: `TestEveryUnionMemberIsRegistered` fails when the document publishes
+  a variant the decoder would return as `UnknownEvent`.
+- Add an event variant by declaring `type X api.Y` in `event.go` and adding its
+  `eventRegistry` entry. The type-to-schema mapping derives itself from that
+  declaration, so there is no table to edit.
 - Refresh the description on purpose, and record the source commit in
   `spec/README.md`. Nothing else records it.
 - Re-resolve upstream's `refs/heads/main` before trusting a local checkout.
@@ -35,7 +37,9 @@ Read `doc.go` before changing the public surface.
   `NOTICE` is the list; do not restate it here.
 
 `bin/generate.sh` produces `internal/api`. Run it after the spec moves, and commit
-the result. Never edit that package by hand: the next run discards the edit.
+the result. Never edit that package by hand: the next run discards the edit. It
+needs `python3` 3.10 or newer and `oapi-codegen` v2.8.0; the script checks both
+and names what is missing.
 
 Generation runs over `spec/preprocess.py`'s output, not over `spec/openapi.json`.
 That stage stamps the Go type decisions no OpenAPI document can carry. Generating
@@ -60,6 +64,12 @@ bin/check.sh
 
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
 Run it before opening a pull request, and report what it said.
+
+Two legs run only in CI, both in the `Go SDK lint` job: `golangci-lint`, and a
+check that regenerates `internal/api` and fails if the committed copy differs.
+`bin/check.sh` runs neither, because both need a tool outside the Go toolchain.
+Run `bin/generate.sh` yourself after touching the spec or the stage, so the
+second one does not surprise you on the pull request.
 
 The module depends only on what the generated client needs:
 `github.com/oapi-codegen/runtime`, and the two modules it pulls in. Adding

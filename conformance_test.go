@@ -293,6 +293,18 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 // TestEveryUnionMemberIsRegistered pins the registry against the spec's own
 // discriminator mapping, so a variant the server publishes and this package does
 // not know is visible here rather than as an UnknownEvent in production.
+// TestEveryUnionMemberIsRegistered pins the direction the field checks cannot
+// cover: that this package reaches every event the document declares.
+//
+// The other conformance tests read a Go type and ask what the document says
+// about it, so a schema nothing declares is a schema nothing checks. That is how
+// a new event variant arrives unnoticed: the spec gains one, the suite stays
+// green, and a caller receives it as [UnknownEvent] with no signal that a typed
+// variant was available.
+//
+// This runs against the vendored document, so it catches a spec refresh that
+// nobody regenerated for. It cannot catch the vendored copy itself going stale
+// against the server, which needs the network and lives outside `go test`.
 func TestEveryUnionMemberIsRegistered(t *testing.T) {
 	raw, err := os.ReadFile("spec/openapi.json")
 	if err != nil {
@@ -657,64 +669,6 @@ func goFieldName(wire string) string {
 		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
 	}
 	return b.String()
-}
-
-// TestEveryUnionVariantHasAGoType pins the direction the field checks cannot
-// cover: that this package reaches every event the document declares.
-//
-// The other conformance tests read a Go type and ask what the document says
-// about it, so a schema nothing declares is a schema nothing checks. That is how
-// a new event variant arrives unnoticed: the spec gains one, the suite stays
-// green, and a caller receives it as [UnknownEvent] with no signal that a typed
-// variant was available.
-//
-// This runs against the vendored document, so it catches a spec refresh that
-// nobody regenerated for. It cannot catch the vendored copy itself going stale
-// against the server, which needs the network and lives outside `go test`.
-func TestEveryUnionVariantHasAGoType(t *testing.T) {
-	t.Parallel()
-
-	var doc struct {
-		Components struct {
-			Schemas map[string]struct {
-				OneOf []struct {
-					Ref string `json:"$ref"`
-				} `json:"oneOf"`
-				Discriminator struct {
-					Mapping map[string]string `json:"mapping"`
-				} `json:"discriminator"`
-			} `json:"schemas"`
-		} `json:"components"`
-	}
-	raw, err := os.ReadFile("spec/openapi.json")
-	if err != nil {
-		t.Fatalf("read spec: %v", err)
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("decode spec: %v", err)
-	}
-
-	union := doc.Components.Schemas["ServerStreamEvent"]
-	if len(union.Discriminator.Mapping) == 0 {
-		t.Fatal("ServerStreamEvent declares no discriminator mapping; the extraction is broken")
-	}
-
-	// The registry is what DecodeEvent dispatches on, so checking it checks the
-	// behaviour rather than the mere presence of a Go declaration.
-	for wire := range union.Discriminator.Mapping {
-		if _, ok := eventRegistry[wire]; !ok {
-			t.Errorf("the document declares event %q and this package decodes it as UnknownEvent; "+
-				"add a variant and a registry entry, or record why it is deliberately untyped", wire)
-		}
-	}
-
-	// And the reverse, so a removed event does not leave a decoder behind that
-	// nothing can produce.
-	for wire := range eventRegistry {
-		if _, ok := union.Discriminator.Mapping[wire]; !ok {
-			t.Errorf("this package decodes event %q, which the document no longer declares", wire)
-		}
-	}
 }
 
 // TestSchemaForIsDerivedFromDeclarations pins that the derivation found the

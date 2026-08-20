@@ -124,9 +124,15 @@ func carriedDescriptionCount(t *testing.T, path string, descriptions []string) i
 	}
 	haystack := normaliseProse(comments.String())
 
+	// Case-folded, because the house doc-comment form lowercases the first letter
+	// of the description it reproduces: an upstream "Machine-readable error
+	// information..." becomes "// ErrorDetail is machine-readable error
+	// information...". A case-sensitive match reads that as carrying nothing, and
+	// this test's answer decides whether NOTICE names the file.
+	haystack = strings.ToLower(haystack)
 	count := 0
 	for _, description := range descriptions {
-		if strings.Contains(haystack, description) {
+		if strings.Contains(haystack, strings.ToLower(description)) {
 			count++
 		}
 	}
