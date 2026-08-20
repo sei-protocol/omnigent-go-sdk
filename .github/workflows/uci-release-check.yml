@@ -7,10 +7,15 @@ run-name: UCI / Release Check
 #
 # pull_request_target rather than pull_request, matching the other repositories
 # that use this: the check needs a token that can comment on the pull request,
-# which a fork-originated pull_request run does not get. That makes the trigger
-# privileged, so nothing here checks out or executes pull-request code — the
-# reusable workflow reads version.json through the API at the head SHA rather
-# than from a checkout.
+# which a fork-originated pull_request run does not get.
+#
+# That makes the trigger privileged, and a fork PR touching version.json reaches
+# it. The reusable workflow does check out — with no ref, so on this trigger it
+# gets the BASE tree, not the pull request's — and then runs gorelease and
+# gocompat over it. The trigger's safety rests entirely on that default ref, so
+# the ref this file names is pinned to a commit rather than a tag: a tag is
+# mutable, and moving it would run different code here with contents: write. A
+# Go tag is this module's release, so that token is the release.
 on:
   pull_request_target:
     paths: [ 'version.json' ]
@@ -28,4 +33,4 @@ concurrency:
 jobs:
   release-check:
     name: Release
-    uses: sei-protocol/uci/.github/workflows/release-check.yml@v0.0.15
+    uses: sei-protocol/uci/.github/workflows/release-check.yml@65901242783550521f25a19199a6b10e54550b97  # v0.0.15
