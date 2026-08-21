@@ -17,12 +17,12 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Six conformance tests check every exported type the decoder reaches,
+  declares. Four conformance tests check every exported type the decoder reaches,
   across five dimensions.
   They do not check presence: omitting a property the document declares passes,
   deliberately.
-- Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
-  fail when the two disagree, and that is deliberate.
+- Add an event variant to `eventRegistry`. A type finds its schema by name, so
+  add a `schemaExceptions` row only when the two differ.
 - Refresh the description on purpose, and record the source commit in
   `spec/README.md`. Nothing else records it.
 - Re-resolve upstream's `refs/heads/main` before trusting a local checkout.
