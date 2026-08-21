@@ -17,8 +17,7 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Four conformance tests check every exported type the decoder reaches,
-  across five dimensions.
+  declares. The conformance tests check every exported type the decoder reaches.
   They do not check presence: omitting a property the document declares passes,
   deliberately.
 - Add an event variant to `eventRegistry`. A type finds its schema by name, so
