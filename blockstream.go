@@ -1,6 +1,7 @@
 package omnigent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -75,11 +76,16 @@ type blockState struct {
 	// string: appending to a string copies the whole answer per delta, which is
 	// quadratic in the answer's length and runs on the goroutine draining the
 	// stream.
-	fullText      strings.Builder
-	inReasoning   bool
-	reasoning     string // accumulated reasoning, not yet flushed
-	reasoningText string // the section's full reasoning
-	summaryText   string
+	fullText    strings.Builder
+	inReasoning bool
+	// The same reason fullText is a Builder: appending to a string copies the
+	// whole section per delta. Measured before this shape, at 31 MiB of reasoning
+	// across four frames: 37s of CPU against 27ms for the text path, and 1.4 GB of
+	// allocation to fold 343 KB. reasoning is a byte slice rather than a Builder
+	// because the line flush below slices it, which a Builder cannot do.
+	reasoning     []byte          // accumulated reasoning, not yet flushed
+	reasoningText strings.Builder // the section's full reasoning
+	summaryText   strings.Builder
 	// reasoningChunked records that this section streamed chunks, which suppresses
 	// the closing [ReasoningBlock] so a renderer showing both does not draw the
 	// same reasoning twice.
@@ -280,18 +286,25 @@ func (s *blockState) appendReasoning(delta string, summary bool) {
 		s.beginReasoning()
 	}
 	if summary {
-		s.summaryText += delta
+		s.summaryText.WriteString(delta)
 	} else {
-		s.reasoningText += delta
+		s.reasoningText.WriteString(delta)
 	}
-	s.reasoning += delta
+	// Scan only what arrived. Rescanning the whole buffer per delta is the other
+	// half of the quadratic cost, and it is the half a reasoning section with no
+	// newlines pays in full: the buffer grows to the section's length and every
+	// delta walks all of it.
+	scanned := len(s.reasoning)
+	s.reasoning = append(s.reasoning, delta...)
 	for {
-		line := strings.IndexByte(s.reasoning, '\n')
+		line := bytes.IndexByte(s.reasoning[scanned:], '\n')
 		if line < 0 {
 			break
 		}
-		text := s.reasoning[:line]
+		line += scanned
+		text := string(s.reasoning[:line])
 		s.reasoning = s.reasoning[line+1:]
+		scanned = 0
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
@@ -309,21 +322,21 @@ func (s *blockState) closeReasoning() {
 	if !s.inReasoning {
 		return
 	}
-	if rest := strings.TrimSpace(s.reasoning); rest != "" {
+	if rest := strings.TrimSpace(string(s.reasoning)); rest != "" {
 		s.reasoningChunked = true
 		s.put(ReasoningChunk{blockCtx: s.at(), Text: rest})
 	}
-	if !s.reasoningChunked && (s.reasoningText != "" || s.summaryText != "") {
+	if !s.reasoningChunked && (s.reasoningText.Len() > 0 || s.summaryText.Len() > 0) {
 		s.put(ReasoningBlock{
 			blockCtx:      s.at(),
-			ReasoningText: s.reasoningText,
-			SummaryText:   s.summaryText,
+			ReasoningText: s.reasoningText.String(),
+			SummaryText:   s.summaryText.String(),
 		})
 	}
 	s.inReasoning = false
-	s.reasoning = ""
-	s.reasoningText = ""
-	s.summaryText = ""
+	s.reasoning = s.reasoning[:0]
+	s.reasoningText.Reset()
+	s.summaryText.Reset()
 	s.reasoningChunked = false
 }
 
