@@ -15,11 +15,13 @@ import (
 
 // These tests hold the hand-authored types to spec/openapi.json.
 //
-// Five dimensions: the mapping is complete in both directions, every exported
-// field names a property the description declares, its Go type and optionality
-// match, a container's declared value or element type matches, every declared
-// enum value has a constant, and the decoder's variant set equals the
-// description's discriminator mapping.
+// What they check: every exported field names a property the description
+// declares; its Go type and optionality match, including a container's declared
+// value or element type; every declared enum value has a constant; and the
+// decoder's variant set equals the description's discriminator mapping.
+//
+// No count here on purpose. A number in prose goes stale the first time a test
+// is split or retired, and the list is what a reader needs anyway.
 //
 // They do not check presence. A property the description declares and this
 // package omits passes, deliberately: the surface is meant to be smaller than the

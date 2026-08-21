@@ -63,8 +63,7 @@
 // of the server's OpenAPI document and this package's contract of record. No code
 // generator runs, and none is committed.
 //
-// Six tests hold the types to the description, across five dimensions: the
-// mapping is complete in both directions, every exported field names a property
+// Tests hold the types to the description: every exported field names a property
 // the description declares, its Go type and optionality match, a container's
 // declared value or element type matches, every declared enum value has a
 // constant, and the decoder's variant set equals the discriminator mapping.
