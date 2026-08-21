@@ -17,11 +17,11 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Five conformance tests check every exported type the decoder reaches.
+  declares. The conformance tests check every exported type the decoder reaches.
   They do not check presence: omitting a property the document declares passes,
   deliberately.
-- Add an event variant to `eventRegistry` and to `schemaFor` together. The tests
-  fail when the two disagree, and that is deliberate.
+- Add an event variant to `eventRegistry`. A type finds its schema by name, so
+  add a `schemaExceptions` row only when the two differ.
 - Refresh the description on purpose, and record the source commit in
   `spec/README.md`. Nothing else records it.
 - Re-resolve upstream's `refs/heads/main` before trusting a local checkout.
@@ -29,7 +29,8 @@ Read `doc.go` before changing the public surface.
   the Python client beside it.
 - Add a file to `NOTICE` when you copy an upstream schema or property description
   into it. The list is exhaustive by measurement, not by convention, and
-  `TestNoticeNamesEveryFileCarryingUpstreamProse` measures it in both directions.
+  `TestNoticeNamesEveryFileCarryingUpstreamProse` measures it in both directions,
+  so a file you forget fails the suite rather than shipping unattributed.
   `NOTICE` is the list; do not restate it here.
 
 This module runs no code generator. Do not add one: re-adding one is a one-way

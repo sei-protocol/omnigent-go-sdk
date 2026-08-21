@@ -160,7 +160,7 @@ type ResponseObject struct {
 	PreviousResponseID *string `json:"previous_response_id,omitempty"`
 
 	// Reasoning configuration, e.g. {"effort": "medium"}.
-	Reasoning map[string]any `json:"reasoning,omitempty"`
+	Reasoning map[string]string `json:"reasoning,omitempty"`
 
 	// Lifecycle status, one of "queued", "in_progress", "completed", "failed", "incomplete",
 	// "cancelled".

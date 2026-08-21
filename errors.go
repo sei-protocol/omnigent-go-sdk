@@ -86,6 +86,23 @@ var (
 	// a hostile one. Recover exactly as for [ErrStreamInterrupted].
 	ErrStreamFrameTooLarge = fmt.Errorf("%w: frame exceeds the client's size limit", ErrStreamProtocol)
 
+	// ErrListingUnbounded reports a paged listing that never reached an end: it
+	// returned a cursor it had already returned, or kept reporting more past the
+	// page ceiling.
+	//
+	// The server decides when a listing ends, so a walk cannot rely on it. This is
+	// what the walk raises instead of continuing, and retrying will not help until
+	// the server's paging is fixed.
+	ErrListingUnbounded = errors.New("listing did not reach an end")
+
+	// ErrTruncated reports that a response was larger than the bound the caller
+	// supplied, so what was written is a prefix rather than the whole thing.
+	//
+	// Not [ErrInvalidArgument]: the caller's arguments were accepted and the
+	// request was made. The server chose the length. Retry with a larger bound, or
+	// treat the prefix as all that was wanted.
+	ErrTruncated = errors.New("response exceeds the caller's bound")
+
 	// ErrUnsafeRedirect reports a redirect this package would not follow: one
 	// leaving the host the base URL named, one stepping down from https to
 	// plain http, one rewriting a write as a read, or a chain that never
@@ -99,6 +116,17 @@ var (
 	// in front of the server. The package overview, under Redirects, has the
 	// reasoning and what Go's own rule does instead.
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
+
+	// ErrRedirectNotFollowed reports a redirect this package could not follow,
+	// as distinct from one it refused. An upload streams its body, so there is
+	// nothing to replay at the new location and net/http hands the response back
+	// rather than consulting the redirect policy.
+	//
+	// The location was on the server the base URL names, so nothing was sent
+	// anywhere else and this is a configuration to fix rather than an attempt to
+	// divert a credential: point the base URL at the route that serves the
+	// upload. A location naming another server is [ErrUnsafeRedirect] instead.
+	ErrRedirectNotFollowed = errors.New("could not follow a redirect")
 )
 
 // sanitizeForError makes a server-chosen string safe to render into an error.
@@ -139,6 +167,17 @@ func sanitizeForError(s string, max int) string {
 // maxErrorFieldRunes bounds one server-supplied field in a rendered error. The
 // body cap is 64 KiB, so without this a single title fills a log line with it.
 const maxErrorFieldRunes = 200
+
+// maxRequestIDRunes is tighter than [maxErrorFieldRunes] because a request id is
+// an opaque handle an operator pastes into a query, not prose. The server's own
+// ids are short, so a long one means something other than this API answered.
+const maxRequestIDRunes = 80
+
+// maxAgentNameRunes bounds one agent name inside a resolve failure. The listing
+// route is unbounded and heterogeneous, so both the number of names and the
+// length of each are the server's choice; [Sessions.ResolveAgent] caps the count
+// and this caps each entry.
+const maxAgentNameRunes = 60
 
 // Error is the interface every server-response error in this package satisfies.
 //
@@ -257,6 +296,9 @@ func (e *APIError) Status() int { return e.StatusCode }
 // Error implements error. It appends the request id when the server supplied
 // one, so a copied-out error message is enough to find the server-side record.
 //
+// Every field it renders is the server's choice, so every one goes through
+// [sanitizeForError]. A field added here needs the same treatment.
+//
 // It renders no part of Body. When the response carried no structured message —
 // the proxy-interstitial case — it says how much body there was and what type
 // it claimed, which is enough to tell "the API rejected this" from "something
@@ -268,7 +310,7 @@ func (e *APIError) Error() string {
 	}
 	// Title is the server's own headline for a failure it recognised, so it
 	// leads when present: it says more than the code and is shorter than Cause.
-	headline := e.Code
+	headline := sanitizeForError(e.Code, maxErrorFieldRunes)
 	if e.Title != "" {
 		headline = sanitizeForError(e.Title, maxErrorFieldRunes)
 	}
@@ -292,7 +334,7 @@ func (e *APIError) Error() string {
 		detail = label
 	}
 	if e.RequestID != "" {
-		detail += fmt.Sprintf(" (request id %s)", e.RequestID)
+		detail += fmt.Sprintf(" (request id %s)", sanitizeForError(e.RequestID, maxRequestIDRunes))
 	}
 	return "omnigent: " + detail
 }

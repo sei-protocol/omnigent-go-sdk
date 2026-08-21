@@ -71,10 +71,12 @@ const (
 // callers should share a single Client so its connections are pooled.
 type Client struct {
 	baseURL *url.URL
-	// unary carries a whole-exchange timeout; stream is the same client with
-	// that timeout removed. Both share one transport, so one connection pool.
+	// unary carries a whole-exchange timeout; stream and transfer are the same
+	// client with that timeout replaced. All three share one transport, so one
+	// connection pool.
 	unary       *http.Client
 	stream      *http.Client
+	transfer    *http.Client
 	header      http.Header
 	idleTimeout time.Duration
 	// ownsTransport records that [New] built the transport, so [Client.Close]
@@ -98,6 +100,11 @@ type config struct {
 	// while an explicit value still outranks it: the option resolves its own
 	// zero to defaultUnaryTimeout, so zero here is unambiguous.
 	unaryTimeout time.Duration
+
+	// transferTimeout is [WithTransferTimeout]'s value. Zero is the default and
+	// means no whole-transfer bound, so unlike unaryTimeout it needs no sentinel:
+	// the option's own zero and an unset option want the same thing.
+	transferTimeout time.Duration
 
 	// credentialed records that an auth option ran, which is what makes the
 	// base URL's scheme a security question rather than a preference.
@@ -219,6 +226,9 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 	streaming := unary
 	streaming.Timeout = 0
 	client.stream = &streaming
+	transferring := unary
+	transferring.Timeout = cfg.transferTimeout
+	client.transfer = &transferring
 	return client, nil
 }
 
@@ -231,6 +241,24 @@ func defaultTransport(unaryTimeout time.Duration) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = max(unaryTimeout, minResponseHeaderTimeout)
 	return transport
+}
+
+// stripRedirectURL drops the *url.Error net/http wraps a refused redirect in.
+//
+// net/http sets that wrapper's URL field to the verbatim Location header, so the
+// rendered error carries whatever the server put there — a password in userinfo,
+// an OAuth state and code on a 302-to-login. [checkRedirect] takes care to print
+// only hosts; this is where that care would otherwise be undone. The inner error
+// still wraps [ErrUnsafeRedirect], so errors.Is keeps working.
+func stripRedirectURL(err error) error {
+	if !errors.Is(err, ErrUnsafeRedirect) {
+		return err
+	}
+	var wrapped *url.Error
+	if errors.As(err, &wrapped) {
+		return wrapped.Err
+	}
+	return err
 }
 
 // checkRedirect is the redirect policy both of a Client's http.Clients carry.
@@ -250,24 +278,6 @@ func defaultTransport(unaryTimeout time.Duration) *http.Transport {
 //
 // A caller who supplies an http.Client with its own CheckRedirect keeps it —
 // see [WithHTTPClient] — and owns the consequences.
-// stripRedirectURL drops the *url.Error net/http wraps a refused redirect in.
-//
-// net/http sets that wrapper's URL field to the verbatim Location header, so the
-// rendered error carries whatever the server put there — a password in userinfo,
-// an OAuth state and code on a 302-to-login. [checkRedirect] takes care to print
-// only hosts; this is where that care would otherwise be undone. The inner error
-// still wraps [ErrUnsafeRedirect], so errors.Is keeps working.
-func stripRedirectURL(err error) error {
-	if !errors.Is(err, ErrUnsafeRedirect) {
-		return err
-	}
-	var wrapped *url.Error
-	if errors.As(err, &wrapped) {
-		return wrapped.Err
-	}
-	return err
-}
-
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) > maxRedirects {
 		return fmt.Errorf("%w: stopped after %d redirects", ErrUnsafeRedirect, maxRedirects)
@@ -572,6 +582,32 @@ func WithUserAgent(userAgent string) Option {
 // Prefer a context deadline for anything call-specific. This is one value for
 // every unary call; its job is to stop a wedged connection hanging forever
 // rather than to express a latency policy.
+// WithTransferTimeout bounds one whole file transfer: [SessionFiles.Upload] and
+// [SessionFiles.Download].
+//
+// Separate from [WithUnaryTimeout] because the two bound different things. A
+// unary call's duration is the server's thinking time, which a client can put a
+// number on. A transfer's duration is the file's size over the network's rate,
+// which it cannot: the bound that stops a wedged RPC is the bound that makes a
+// large upload impossible, and one value cannot be both.
+//
+// Zero, the default, sets no whole-transfer bound. The context passed to the call
+// is then the only limit on how long it may run, which is the same arrangement
+// the streaming calls use. Set this when a caller wants one ceiling for every
+// transfer instead of a deadline per call.
+//
+// Transport.ResponseHeaderTimeout still applies, so a server that accepts a
+// connection and then says nothing fails without waiting for this.
+func WithTransferTimeout(d time.Duration) Option {
+	return optionFunc(func(cfg *config) error {
+		if d < 0 {
+			return fmt.Errorf("WithTransferTimeout: %w: negative duration %s", ErrInvalidArgument, d)
+		}
+		cfg.transferTimeout = d
+		return nil
+	})
+}
+
 func WithUnaryTimeout(d time.Duration) Option {
 	return optionFunc(func(cfg *config) error {
 		if d < 0 {
@@ -697,4 +733,140 @@ func (c *Client) doJSON(
 		return fmt.Errorf("decode %s %s response: %w", method, req.URL.Path, err)
 	}
 	return nil
+}
+
+// doUpload sends a streamed body under a caller-supplied content type.
+//
+// Separate from [Client.doJSON] because that one encodes a value into memory
+// before sending, which is exactly what an upload must not do. The body here is a
+// reader the transport drains, so the request holds one buffer rather than the
+// whole file.
+func (c *Client) doUpload(ctx context.Context, segments []string, contentType string, body io.Reader, out any) error {
+	target, err := c.resolve(segments, nil)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), body)
+	if err != nil {
+		return fmt.Errorf("build POST %s request: %w", target.Path, err)
+	}
+	for name, values := range c.header {
+		req.Header[name] = append([]string(nil), values...)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+
+	// The transfer client, not the unary one: how long a body takes to send is
+	// the caller's file size over the network's rate, which no fixed bound sized
+	// for an RPC can predict. ctx is the bound.
+	resp, err := c.transfer.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", target.Path, stripRedirectURL(err))
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusPermanentRedirect {
+		return classifyUnfollowedRedirect(target, resp)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return newAPIError(resp)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode POST %s response: %w", target.Path, err)
+	}
+	return nil
+}
+
+// doDownload copies a response body to w, refusing to write past maxBytes.
+//
+// It reads one byte past the bound on purpose. Stopping exactly at the limit
+// cannot tell a file that fits from one that was truncated, and reporting a
+// truncated download as a complete one is the failure worth avoiding.
+func (c *Client) doDownload(ctx context.Context, segments []string, w io.Writer, maxBytes int64) (int64, error) {
+	target, err := c.resolve(segments, nil)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("build GET %s request: %w", target.Path, err)
+	}
+	for name, values := range c.header {
+		req.Header[name] = append([]string(nil), values...)
+	}
+
+	// The transfer client, not the unary one. A download's length is the server's
+	// choice and its rate is the network's, so a fixed whole-exchange bound sized
+	// for an RPC truncates a large file that is arriving perfectly well. maxBytes
+	// bounds the size; ctx bounds the time.
+	resp, err := c.transfer.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("GET %s: %w", target.Path, stripRedirectURL(err))
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBodyBytes))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, newAPIError(resp)
+	}
+
+	// CopyN to the caller's writer, then probe the body separately. Reading one
+	// past the bound is how a file that fits is told from one that was truncated,
+	// but that byte must not reach a writer that declared a smaller capacity.
+	written, err := io.CopyN(w, resp.Body, maxBytes)
+	switch {
+	case errors.Is(err, io.EOF):
+		// Body ended within the bound, which is the ordinary case.
+		return written, nil
+	case err != nil:
+		return written, fmt.Errorf("GET %s: read body: %w", target.Path, err)
+	}
+
+	var probe [1]byte
+	if n, _ := resp.Body.Read(probe[:]); n > 0 {
+		return written, fmt.Errorf("GET %s: %w: body exceeds the caller's %d-byte bound",
+			target.Path, ErrTruncated, maxBytes)
+	}
+	return written, nil
+}
+
+// classifyUnfollowedRedirect names a 307 or 308 an upload could not follow.
+//
+// net/http replays the request to follow those two, and a streamed body cannot be
+// replayed, so it returns the response and [checkRedirect] never runs. Every
+// other method gets its redirects classified; without this an upload reports a
+// bare 307, which tells an operator running a path-rewriting proxy nothing and
+// tells a caller watching for [ErrUnsafeRedirect] nothing either.
+//
+// [checkRedirect]'s own gates decide which case it is, so the policy keeps one
+// home: a location the base URL does not name is the security case, and one it
+// does name is a configuration the caller can fix.
+func classifyUnfollowedRedirect(origin *url.URL, resp *http.Response) error {
+	next, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		// Unparseable is not benign: it is a location that cannot be shown to be on
+		// this server. Refuse it as if it named another one.
+		return fmt.Errorf("%w: %s answered %d with a Location that does not parse",
+			ErrUnsafeRedirect, origin.Host, resp.StatusCode)
+	}
+	next = origin.ResolveReference(next)
+
+	if !reachableScheme(next.Scheme) || !sameEndpoint(origin, next) || next.User != nil {
+		// Hosts only, never the location itself — the same care [stripRedirectURL]
+		// exists to preserve.
+		return fmt.Errorf("%w: %s answered %d redirecting an upload to %s, which the base "+
+			"URL does not name; the request's credentials were not sent there",
+			ErrUnsafeRedirect, origin.Host, resp.StatusCode, next.Host)
+	}
+	return fmt.Errorf("%w: %s answered %d for %s, and a streamed upload body cannot be "+
+		"replayed to follow it; point the base URL at the route that serves the upload",
+		ErrRedirectNotFollowed, origin.Host, resp.StatusCode, origin.Path)
 }

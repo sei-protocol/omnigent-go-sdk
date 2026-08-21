@@ -15,89 +15,45 @@ import (
 
 // These tests hold the hand-authored types to spec/openapi.json.
 //
-// Together they check that every exported field the decoder reaches names a
-// property the description declares, that its Go type and optionality match, and
-// that the decoder's variant set equals the description's discriminator mapping
-// in both directions.
+// What they check: every exported field names a property the description
+// declares; its Go type and optionality match, including a container's declared
+// value or element type; every declared enum value has a constant; and the
+// decoder's variant set equals the description's discriminator mapping.
+//
+// No count here on purpose. A number in prose goes stale the first time a test
+// is split or retired, and the list is what a reader needs anyway.
 //
 // They do not check presence. A property the description declares and this
 // package omits passes, deliberately: the surface is meant to be smaller than the
 // document, not equal to it.
 
-// schemaFor names the spec schema each hand-authored type mirrors.
+// schemaExceptions holds the types whose Go name differs from their schema name.
 //
-// A type absent from this map is not checked, so [TestEveryMirroredTypeIsMapped]
-// holds the event half to the decoder's own registry: a variant the decoder knows
-// and this map does not is a failure, not a silent skip. The support half is a
-// plain list, because nothing else enumerates it.
-var schemaFor = map[string]string{
-	"BrowserActionRequestEvent":           "BrowserActionRequestEvent",
-	"ClientTaskCancelEvent":               "ClientTaskCancelEvent",
-	"CompactionCompletedEvent":            "CompactionCompletedEvent",
-	"CompactionFailedEvent":               "CompactionFailedEvent",
-	"CompactionInProgressEvent":           "CompactionInProgressEvent",
-	"ElicitationRequestEvent":             "ElicitationRequestEvent",
-	"ElicitationResolvedEvent":            "ElicitationResolvedEvent",
-	"ErrorEvent":                          "ErrorEvent",
-	"InProgressEvent":                     "InProgressEvent",
-	"IncompleteEvent":                     "IncompleteEvent",
-	"OutputFileDoneEvent":                 "OutputFileDoneEvent",
-	"OutputItemDoneEvent":                 "OutputItemDoneEvent",
-	"OutputTextDeltaEvent":                "OutputTextDeltaEvent",
-	"PolicyDeniedEvent":                   "PolicyDeniedEvent",
-	"QueuedEvent":                         "QueuedEvent",
-	"ReasoningStartedEvent":               "ReasoningStartedEvent",
-	"ReasoningSummaryTextDeltaEvent":      "ReasoningSummaryTextDeltaEvent",
-	"ReasoningTextDeltaEvent":             "ReasoningTextDeltaEvent",
-	"ResponseCancelledEvent":              "CancelledEvent",
-	"ResponseCompletedEvent":              "CompletedEvent",
-	"ResponseCreatedEvent":                "CreatedEvent",
-	"ResponseFailedEvent":                 "FailedEvent",
-	"ResponseHeartbeatEvent":              "HeartbeatEvent",
-	"RetryEvent":                          "RetryEvent",
-	"SessionAgentChangedEvent":            "SessionAgentChangedEvent",
-	"SessionChangedFilesInvalidatedEvent": "SessionChangedFilesInvalidatedEvent",
-	"SessionChildSessionUpdatedEvent":     "SessionChildSessionUpdatedEvent",
-	"SessionCollaborationModeEvent":       "SessionCollaborationModeEvent",
-	"SessionCreatedEvent":                 "SessionCreatedEvent",
-	"SessionHeartbeatEvent":               "SessionHeartbeatEvent",
-	"SessionInputConsumedEvent":           "SessionInputConsumedEvent",
-	"SessionInterruptedEvent":             "SessionInterruptedEvent",
-	"SessionMCPStartupEvent":              "SessionMcpStartupEvent",
-	"SessionModelEvent":                   "SessionModelEvent",
-	"SessionModelOptionsEvent":            "SessionModelOptionsEvent",
-	"SessionPresenceEvent":                "SessionPresenceEvent",
-	"SessionReasoningEffortEvent":         "SessionReasoningEffortEvent",
-	"SessionResourceCreatedEvent":         "SessionResourceCreatedEvent",
-	"SessionResourceDeletedEvent":         "SessionResourceDeletedEvent",
-	"SessionSandboxStatusEvent":           "SessionSandboxStatusEvent",
-	"SessionSkillsEvent":                  "SessionSkillsEvent",
-	"SessionStatusEvent":                  "SessionStatusEvent",
-	"SessionSupersededEvent":              "SessionSupersededEvent",
-	"SessionTerminalActivityEvent":        "SessionTerminalActivityEvent",
-	"SessionTerminalPendingEvent":         "SessionTerminalPendingEvent",
-	"SessionTodosEvent":                   "SessionTodosEvent",
-	"SessionUsageEvent":                   "SessionUsageEvent",
-	"ToolOutputDeltaEvent":                "ToolOutputDeltaEvent",
-	"TurnCancelledEvent":                  "TurnCancelledEvent",
-	"TurnCompletedEvent":                  "TurnCompletedEvent",
-	"TurnFailedEvent":                     "TurnFailedEvent",
-	"TurnStartedEvent":                    "TurnStartedEvent",
+// Two differ because Go writes an initialism in capitals and the description does
+// not. Five differ because this package prefixes a response event the description
+// leaves bare, so [ResponseCompletedEvent] does not collide with
+// [TurnCompletedEvent].
+//
+// Everything else matches, so nothing else is listed. A name absent here is its
+// own schema name, and a name that resolves to no schema fails in
+// [declaredProperties], which is where the consequence is: the field, type and
+// enum checks all read the schema this resolves to.
+var schemaExceptions = map[string]string{
+	"MCPServerStartup":       "McpServerStartup",
+	"ResponseCancelledEvent": "CancelledEvent",
+	"ResponseCompletedEvent": "CompletedEvent",
+	"ResponseCreatedEvent":   "CreatedEvent",
+	"ResponseFailedEvent":    "FailedEvent",
+	"ResponseHeartbeatEvent": "HeartbeatEvent",
+	"SessionMCPStartupEvent": "SessionMcpStartupEvent",
+}
 
-	// Support types the event union reaches.
-	"ConversationRef":             "ConversationRef",
-	"ElicitationRequestParams":    "ElicitationRequestParams",
-	"ErrorDetail":                 "ErrorDetail",
-	"IncompleteDetails":           "IncompleteDetails",
-	"MCPServerStartup":            "McpServerStartup",
-	"ModelUsage":                  "ModelUsage",
-	"PresenceViewer":              "PresenceViewer",
-	"ResponseObject":              "ResponseObject",
-	"RetryErrorDetail":            "RetryErrorDetail",
-	"SessionInputConsumedPayload": "SessionInputConsumedPayload",
-	"SessionInterruptedPayload":   "SessionInterruptedPayload",
-	"Usage":                       "Usage",
-	"UsageDetails":                "UsageDetails",
+// schemaFor returns the schema name a mirrored type reflects.
+func schemaFor(goName string) string {
+	if schema, exceptional := schemaExceptions[goName]; exceptional {
+		return schema
+	}
+	return goName
 }
 
 // loadSpec reads the vendored description once per test.
@@ -126,7 +82,7 @@ func declaredProperties(t *testing.T, schemas map[string]any, name string) map[s
 	t.Helper()
 	node, ok := schemas[name].(map[string]any)
 	if !ok {
-		// Errorf, not Fatalf: one renamed schema must not hide the other sixty.
+		// Errorf, not Fatalf: one renamed schema must not hide the rest.
 		t.Errorf("spec declares no schema %q", name)
 		return nil
 	}
@@ -153,8 +109,7 @@ func mirroredTypes(t *testing.T) map[string]reflect.Type {
 	var walk func(reflect.Type)
 	walk = func(rt reflect.Type) {
 		// Map is here because a schema's additionalProperties can be a $ref, so a
-		// type is sometimes reachable only as a map's value. Omitting it left two
-		// mapped types unchecked.
+		// type is sometimes reachable only as a map's value.
 		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Map {
 			rt = rt.Elem()
 		}
@@ -177,18 +132,60 @@ func mirroredTypes(t *testing.T) map[string]reflect.Type {
 		}
 		walk(reflect.TypeOf(ev))
 	}
+	// The event registry reaches only what the stream decodes. Types the request
+	// and response surface uses need their own roots, or they sit in schemaFor
+	// looking covered while nothing inspects a single field.
+	for _, root := range surfaceRoots {
+		walk(reflect.TypeOf(root))
+	}
 	return found
 }
 
-// TestEveryMirroredTypeIsMapped fails when a type reachable from the decoder has
-// no entry in [schemaFor]. Without it, adding an event variant would silently
-// skip the field check for that variant.
-func TestEveryMirroredTypeIsMapped(t *testing.T) {
-	for name := range mirroredTypes(t) {
-		if _, ok := schemaFor[name]; !ok {
-			t.Errorf("%s is reachable from the decoder but names no spec schema; add it to schemaFor", name)
-		}
+// surfaceRoots are the types the session and file routes return or accept, one
+// zero value each.
+var surfaceRoots = []any{
+	SessionResponse{},
+	SessionList{},
+	SessionListItem{},
+	ChildSessionList{},
+	ChildSessionSummary{},
+	ConversationDeleted{},
+	ConversationItem{},
+	SessionForkRequest{},
+	SessionGitOptions{},
+	UpdateSessionRequest{},
+	PaginatedList{},
+	AgentObject{},
+
+	// ConversationItem.Data is an eleven-variant union in the description, and Go
+	// has no sum type, so the field decodes as any and a caller unmarshals into
+	// one of these after switching on ConversationItem.Type. They are exported,
+	// so they are checked; nothing else reaches them.
+	MessageData{},
+	FunctionCallData{},
+	FunctionCallOutputData{},
+	ErrorData{},
+	ReasoningData{},
+	CompactionData{},
+	NativeToolData{},
+	SlashCommandData{},
+	TerminalCommandData{},
+	ResourceEventData{},
+	RoutingDecisionData{},
+}
+
+// wireName is the JSON name a field declares, and whether it declares one.
+//
+// Both field tests need this, and they had drifted: one guarded an empty name and
+// the other did not. A shared helper is the only thing that keeps two tests
+// agreeing about the tag rule.
+func wireName(field reflect.StructField) (string, bool) {
+	tag := field.Tag.Get("json")
+	if tag == "" || tag == "-" {
+		return "", false
 	}
+	name := strings.Split(tag, ",")[0]
+	return name, name != ""
 }
 
 // TestEveryDeclaredFieldExistsInTheSpec is the direction that can hurt a caller.
@@ -205,20 +202,13 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName, mapped := schemaFor[goName]
-		if !mapped {
-			continue // TestEveryMirroredTypeIsMapped owns this failure
-		}
+		schemaName := schemaFor(goName)
 		declared := declaredProperties(t, schemas, schemaName)
 		rt := types[goName]
 		for i := range rt.NumField() {
 			field := rt.Field(i)
-			tag := field.Tag.Get("json")
-			if tag == "" || tag == "-" {
-				continue
-			}
-			wire := strings.Split(tag, ",")[0]
-			if wire == "" {
+			wire, named := wireName(field)
+			if !named {
 				continue
 			}
 			if !declared[wire] {
@@ -229,10 +219,10 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	}
 }
 
-// TestEveryUnionMemberDecodes pins the registry against the spec's own
+// TestEveryUnionMemberIsRegistered pins the registry against the spec's own
 // discriminator mapping, so a variant the server publishes and this package does
 // not know is visible here rather than as an UnknownEvent in production.
-func TestEveryUnionMemberDecodes(t *testing.T) {
+func TestEveryUnionMemberIsRegistered(t *testing.T) {
 	raw, err := os.ReadFile("spec/openapi.json")
 	if err != nil {
 		t.Fatalf("read spec: %v", err)
@@ -270,6 +260,9 @@ func TestEveryUnionMemberDecodes(t *testing.T) {
 // goKindFor maps a schema's declared type to the reflect.Kind a Go field
 // mirroring it must have. A schema that declares no type, or declares several,
 // carries no expectation and is absent from this map.
+//
+// An object with no additionalProperties is genuinely free-form, so map[string]any
+// mirrors it correctly and [declaredElem] returns no expectation for it.
 func goKindFor(node map[string]any) (reflect.Kind, bool) {
 	switch node["type"] {
 	case "string":
@@ -318,11 +311,63 @@ func unwrapProperty(prop map[string]any) (inner map[string]any, optional bool) {
 	return nonNull[0], optional
 }
 
-// freeFormFields are fields the description declares as an untyped object, so Go
-// carries map[string]any and no stronger expectation exists. Each entry is
-// deliberate: the schema genuinely publishes no shape, rather than this package
-// declining to mirror one.
-var freeFormFields = map[string]bool{}
+// elemExpectation is what the description declares for a container's contents,
+// and which slot it declares it in.
+type elemExpectation struct {
+	slot   string // "value" for a map, "element" for a slice
+	schema string // a $ref target, when the description names one
+	kind   reflect.Kind
+}
+
+func (e elemExpectation) String() string {
+	if e.schema != "" {
+		return e.slot + " type " + e.schema
+	}
+	return e.slot + " kind " + e.kind.String()
+}
+
+// reflectIn resolves the expectation against the types this package mirrors, so
+// a declared $ref inside a container is compared to the real Go type.
+func (e elemExpectation) reflectIn(byName map[string]reflect.Type) reflect.Type {
+	if e.schema != "" {
+		if rt, ok := byName[e.schema]; ok {
+			return rt
+		}
+		return nil // a $ref this package does not mirror carries no expectation
+	}
+	switch e.kind {
+	case reflect.String:
+		return reflect.TypeFor[string]()
+	case reflect.Int:
+		return reflect.TypeFor[int]()
+	case reflect.Float64:
+		return reflect.TypeFor[float64]()
+	case reflect.Bool:
+		return reflect.TypeFor[bool]()
+	}
+	return reflect.TypeFor[any]()
+}
+
+// declaredElem reports what a container schema declares for its contents.
+//
+// A schema that names neither additionalProperties nor items is genuinely
+// free-form, and a map[string]any or []any mirrors it correctly.
+func declaredElem(node map[string]any) (elemExpectation, bool) {
+	for slot, key := range map[string]string{"value": "additionalProperties", "element": "items"} {
+		spec, ok := node[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		if ref, ok := spec["$ref"].(string); ok {
+			parts := strings.Split(ref, "/")
+			return elemExpectation{slot: slot, schema: parts[len(parts)-1]}, true
+		}
+		if kind, known := goKindFor(spec); known && kind != reflect.Map && kind != reflect.Slice {
+			return elemExpectation{slot: slot, kind: kind}, true
+		}
+	}
+	return elemExpectation{}, false
+}
 
 // TestEveryDeclaredFieldMatchesItsSchemaType is the dimension a field-name check
 // cannot reach. A field whose Go type contradicts the description decodes to the
@@ -331,6 +376,16 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	schemas := loadSpec(t)
 	types := mirroredTypes(t)
 
+	// Resolve a declared $ref to the Go type mirroring it, under both spellings:
+	// schemaFor's key is the Go name and its value is the description's own.
+	schemaTypes := make(map[string]reflect.Type, len(types)*2)
+	for goName, rt := range types {
+		schemaTypes[goName] = rt
+		if schemaName := schemaFor(goName); true {
+			schemaTypes[schemaName] = rt
+		}
+	}
+
 	names := make([]string, 0, len(types))
 	for name := range types {
 		names = append(names, name)
@@ -338,13 +393,10 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName, mapped := schemaFor[goName]
-		if !mapped {
-			continue
-		}
+		schemaName := schemaFor(goName)
 		node, ok := schemas[schemaName].(map[string]any)
 		if !ok {
-			continue
+			continue // declaredProperties reports a missing schema
 		}
 		props, _ := node["properties"].(map[string]any)
 		required := map[string]bool{}
@@ -359,17 +411,13 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 		rt := types[goName]
 		for i := range rt.NumField() {
 			field := rt.Field(i)
-			tag := field.Tag.Get("json")
-			if tag == "" || tag == "-" {
+			wire, named := wireName(field)
+			if !named {
 				continue
 			}
-			wire := strings.Split(tag, ",")[0]
 			prop, ok := props[wire].(map[string]any)
 			if !ok {
 				continue // the name check owns a property the schema lacks
-			}
-			if freeFormFields[goName+"."+field.Name] {
-				continue
 			}
 
 			inner, optional := unwrapProperty(prop)
@@ -396,6 +444,16 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 					goName, field.Name, field.Type, schemaName, inner["type"], wire)
 				continue
 			}
+			// One level in. A container's Kind matching is not the check a caller
+			// cares about: map[string]any satisfies "object" while dropping the
+			// value type the description declares, and the field then hands back
+			// an untyped map where a typed value was published.
+			if elem, declared := declaredElem(inner); declared {
+				if want := elem.reflectIn(schemaTypes); want != nil && got.Elem() != want {
+					t.Errorf("%s.%s is %s, but schema %s declares %s for %q's %s",
+						goName, field.Name, field.Type, schemaName, elem, wire, elem.slot)
+				}
+			}
 			switch {
 			case required[wire] && isPointer:
 				t.Errorf("%s.%s is a pointer, but schema %s lists %q as required",
@@ -420,7 +478,8 @@ func TestEveryDeclaredEnumValueHasAConstant(t *testing.T) {
 	constants := declaredConstants(t)
 	declared := 0
 
-	for goName, schemaName := range schemaFor {
+	for goName := range mirroredTypes(t) {
+		schemaName := schemaFor(goName)
 		node, ok := schemas[schemaName].(map[string]any)
 		if !ok {
 			continue

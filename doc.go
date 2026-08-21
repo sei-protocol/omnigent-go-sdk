@@ -6,8 +6,14 @@
 // policy, the error surface, the 52-variant [Event] union, and [Client.Stream]
 // for reading one session's server-sent events.
 //
-// There is no session, files, turn-loop, transcript-block or tool-dispatch
-// surface. A caller needing those reaches the routes directly.
+// It also carries the two namespaces. [Client.Sessions] covers a session's
+// lifecycle, the events posted to it, and its listings; [Client.Files] covers the
+// session-scoped file routes. Every listing is an iter.Seq2 that follows the
+// server's cursor, and [Sessions.ChildrenTree] walks a subtree under bounds the
+// caller sets.
+//
+// There is no turn-loop, transcript-block or tool-dispatch surface. A caller
+// needing those composes them over [Client.Stream] and [Sessions.PostEvent].
 //
 // Building against this package needs Go 1.25 or newer. go.mod declares that
 // floor and CI builds it. The floor tracks the consumer rather than the language
@@ -30,10 +36,26 @@
 //
 // # Optional fields
 //
-// Every optional field on a type in this package is a pointer, so a caller can
-// tell "the server sent zero" from "the server sent nothing". Slices and maps are
-// the exception: nil already carries that distinction, and a pointer to a slice
-// reads badly at a call site. [Ptr] is how a caller sets one.
+// On a type this package decodes, every optional field is a pointer, so a caller
+// can tell "the server sent zero" from "the server sent nothing". Slices and maps
+// are the exception: nil already carries that distinction, and a pointer to a
+// slice reads badly at a call site. [Ptr] is how a caller sets one.
+//
+// On a request type the caller fills — [SessionCreateRequest] and
+// [SessionEventInput] — an optional field is a plain value with omitempty, and
+// leaving it zero is how a caller declines to send it. Where the server needs an
+// explicit value rather than an absence, a named method carries it rather than a
+// magic empty string: [Sessions.ClearModelOverride], not ModelOverride = "".
+//
+// The conformance tests enforce the first rule for every mirrored type. A
+// hand-authored type is outside that gate, so it holds the rule by review.
+//
+// # Enumerated values
+//
+// enums.go names every value the description declares for an enumerated field.
+// The fields themselves stay plain strings, so a value this build has never seen
+// still decodes rather than failing. A switch over those constants therefore
+// needs a default arm.
 //
 // # Hand-authored types
 //
@@ -41,10 +63,10 @@
 // of the server's OpenAPI document and this package's contract of record. No code
 // generator runs, and none is committed.
 //
-// Four tests hold the types to the description. Together they check that every
-// exported field names a property the description declares, that its Go type and
-// optionality match what the description says, and that the decoder's variant set
-// equals the description's own discriminator mapping in both directions.
+// Tests hold the types to the description: every exported field names a property
+// the description declares, its Go type and optionality match, a container's
+// declared value or element type matches, every declared enum value has a
+// constant, and the decoder's variant set equals the discriminator mapping.
 //
 // What they do not check is presence: a property the description declares and
 // this package omits passes. That is deliberate, because reaching every route is
@@ -53,16 +75,33 @@
 // can be silent about one it does not.
 //
 // The consequence to keep in mind: a route or field the document does not carry is
-// a hand-written contract nothing checks. The events route is registered
-// include_in_schema=false, so its body and responses appear nowhere in the
-// document. Anything reached that way is named here as it arrives.
+// a hand-written contract nothing checks, in either direction. Four are reached
+// today, and each is named where it is used.
+//
+// The events route is registered include_in_schema=false, so neither its body nor
+// its responses appear in the document. [SessionEventInput] and [EventAccepted]
+// are this package's own statement of that shape, and [Sessions.Interrupt] and
+// [Sessions.Compact] ride it.
+//
+// The create route takes a raw body and dispatches on Content-Type, so the
+// document carries no request schema and [SessionCreateRequest] is hand-written.
+//
+// The session file routes publish an empty response schema, so [SessionFile] is
+// hand-written and the file surface sits wholly outside the gate. It keeps the
+// decoded body on [SessionFile.Raw] for that reason.
+//
+// The agent and item listings type their payload as heterogeneous, so
+// [Sessions.ListAgents] and [Sessions.ListItems] narrow it by hand.
 //
 // # Timeouts
 //
 // Go's http.Client.Timeout is a deadline on the whole exchange including reading
 // the response body, so any non-zero value severs a healthy long-lived stream.
-// This package therefore keeps two clients over one transport: unary calls carry
-// a whole-exchange timeout, and the streaming client's is zero.
+// This package therefore keeps three clients over one transport. Unary calls
+// carry a whole-exchange timeout. The streaming client's is zero, and so is the
+// transfer client's: a file's duration is its size over the network's rate, so
+// the bound that stops a wedged call is the bound that makes a large upload
+// impossible, and one number cannot be both.
 //
 // The unary bound defaults to 90 seconds, and [WithUnaryTimeout] moves it. It is
 // that long because the slowest routes wait on a runner before they answer and
@@ -71,6 +110,13 @@
 // goes on to make. The arithmetic behind the number sits beside the constant in
 // client.go. A deadline for one call still belongs on that call's context: this
 // bound is the backstop against a wedged connection, not a latency policy.
+//
+// A transfer — [SessionFiles.Upload] or [SessionFiles.Download] — is bounded by
+// its context instead, so a large file is limited by what the caller allows
+// rather than by a number sized for an RPC. [WithTransferTimeout] sets one
+// ceiling for every transfer when a caller wants one. Header latency stays
+// bounded either way by the transport, so a server that accepts a connection and
+// then says nothing still fails fast.
 //
 // Liveness on the stream is enforced instead by an idle watchdog — the server
 // emits a heartbeat frame every 15 seconds of queue silence, so a read that
@@ -87,9 +133,8 @@
 // Every call takes a context.Context, and cancelling it is the only way to stop
 // a stream. Note what that does and does not do: dropping the stream ends the
 // *subscription*, not the agent's turn. The turn runs on the server side
-// independently of any subscriber. To actually stop work, a caller posts an
-// interrupt to the session's events route — which this release does not reach, so
-// that post is theirs to make.
+// independently of any subscriber. To actually stop work, post an interrupt with
+// [Sessions.Interrupt].
 //
 // # Errors
 //
