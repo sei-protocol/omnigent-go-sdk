@@ -137,7 +137,7 @@
 // The Python client's public surface is the reference for this one, and two of its
 // symbols are deliberately absent rather than pending. specs/002-upstream-alignment
 // carries the full mapping; this section states only what will not be built.
-
+//
 // LocalServer starts a server process and waits for it to listen. Managing a
 // server's lifecycle is not a client's job in Go, where a caller already has
 // os/exec and a health check, and a helper that owned a subprocess would own its
