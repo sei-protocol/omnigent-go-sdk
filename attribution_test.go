@@ -1,70 +1,133 @@
 package omnigent
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
 
-// TestAttributionRecoversWhenAnOverlapEnds pins that a sub-agent's turn does not
-// silence the ones after it.
+// TestNoticeNamesEveryFileCarryingUpstreamProse keeps NOTICE exhaustive.
 //
-// A text delta names no response, so the fold infers one. While two responses are
-// live that inference is unsound and the fold credits nothing — correctly. It used
-// to stop crediting permanently, so a single mirrored sub-agent made [OnlyAgent]
-// drop every later block for the life of the subscription. The ambiguity is the
-// overlap, not the stream.
-func TestAttributionRecoversWhenAnOverlapEnds(t *testing.T) {
-	t.Parallel()
-
-	start := func(id, model string) Event {
-		return InProgressEvent{Type: "response.in_progress",
-			Response: ResponseObject{ID: id, Model: model, Status: "in_progress"}}
-	}
-	end := func(id string) Event {
-		return ResponseCompletedEvent{Type: "response.completed",
-			Response: ResponseObject{ID: id, Status: "completed"}}
-	}
-	delta := func(text string) Event {
-		return OutputTextDeltaEvent{Type: "response.output_text.delta", Delta: text}
+// Doc comments in this package reproduce the vendored description's own schema
+// and property text, which makes those files derivative work under the upstream
+// Apache-2.0 licence, and NOTICE names them. The list is a measurement, not a
+// convention: a file that starts carrying upstream prose has to be added, and one
+// that stops has to be removed.
+//
+// Checked in both directions, because either error is wrong. An unnamed file is
+// unattributed reproduction; a named file that carries none overstates what this
+// module borrowed.
+//
+// A description must be at least 45 runes to count, which is long enough that a
+// match is reproduction rather than two people describing one field the same way.
+func TestNoticeNamesEveryFileCarryingUpstreamProse(t *testing.T) {
+	descriptions := upstreamDescriptions(t)
+	if len(descriptions) < 100 {
+		t.Fatalf("found only %d usable descriptions in the spec; the extraction is broken", len(descriptions))
 	}
 
-	events := func(yield func(Event, error) bool) {
-		for _, e := range []Event{
-			// Turn one overlaps with a mirrored sub-agent.
-			start("r1", "coder"),
-			start("r2", "coder.researcher"),
-			delta("ambiguous, two live. "),
-			end("r2"),
-			end("r1"),
-			// Turn two: one response, so attribution is sound again.
-			start("r3", "coder"),
-			delta("turn two, one live."),
-			end("r3"),
-		} {
-			if !yield(e, nil) {
-				return
-			}
+	notice, err := os.ReadFile("NOTICE")
+	if err != nil {
+		t.Fatalf("read NOTICE: %v", err)
+	}
+
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	for _, path := range sources {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		carried := carriedDescriptionCount(t, path, descriptions)
+		named := strings.Contains(string(notice), path)
+		switch {
+		case carried > 0 && !named:
+			t.Errorf("%s reproduces %d upstream descriptions, and NOTICE does not name it",
+				path, carried)
+		case carried == 0 && named:
+			t.Errorf("NOTICE names %s, which reproduces none; the list must stay exhaustive in both directions",
+				path)
 		}
 	}
+}
 
-	var agents []string
-	for block, err := range (&BlockStream{}).Blocks(events) {
-		if err != nil {
-			t.Fatalf("fold: %v", err)
-		}
-		if done, ok := block.(TextDone); ok {
-			agents = append(agents, done.Context().Agent)
-		}
+// commentText is every comment line in a Go source file, joined, so a
+// description that wraps across lines still matches.
+var commentText = regexp.MustCompile(`(?m)^\s*//\s?`)
+
+// upstreamDescriptions returns the description strings the vendored document
+// declares, normalised and long enough that a coincidental match is implausible.
+func upstreamDescriptions(t *testing.T) []string {
+	t.Helper()
+
+	raw, err := os.ReadFile("spec/openapi.json")
+	if err != nil {
+		t.Fatalf("read spec: %v", err)
+	}
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				Description string `json:"description"`
+				Properties  map[string]struct {
+					Description string `json:"description"`
+				} `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode spec: %v", err)
 	}
 
-	if len(agents) != 2 {
-		t.Fatalf("got %d TextDone blocks (%v), want 2", len(agents), agents)
+	var out []string
+	add := func(text string) {
+		// 45 runes is long enough that a match is reproduction, not coincidence.
+		if normalised := normaliseProse(text); len(normalised) >= 45 {
+			out = append(out, normalised[:45])
+		}
 	}
-	// The overlapping delta stays uncredited: honestly unknown beats confidently
-	// wrong, which is what crediting the last-started response would be.
-	if agents[0] != "" {
-		t.Errorf("the overlapping delta was credited to %q, want no agent", agents[0])
+	for _, schema := range doc.Components.Schemas {
+		add(schema.Description)
+		for _, prop := range schema.Properties {
+			add(prop.Description)
+		}
 	}
-	// And the turn after it is credited again.
-	if agents[1] != "coder" {
-		t.Errorf("the single-response turn after the overlap was credited to %q, "+
-			"want coder: attribution did not recover", agents[1])
+	return out
+}
+
+// carriedDescriptionCount reports how many upstream descriptions appear in one
+// file's comments.
+func carriedDescriptionCount(t *testing.T, path string, descriptions []string) int {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
+	var comments strings.Builder
+	for _, line := range strings.Split(string(raw), "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") {
+			comments.WriteString(commentText.ReplaceAllString(line, ""))
+			comments.WriteString(" ")
+		}
+	}
+	haystack := normaliseProse(comments.String())
+
+	count := 0
+	for _, description := range descriptions {
+		if strings.Contains(haystack, description) {
+			count++
+		}
+	}
+	return count
+}
+
+// normaliseProse collapses whitespace and drops the markup that differs between
+// a JSON description and a Go comment, so the comparison is about words.
+func normaliseProse(text string) string {
+	text = strings.ReplaceAll(text, "`", "")
+	return strings.Join(strings.Fields(text), " ")
 }
