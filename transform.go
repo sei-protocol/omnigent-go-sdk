@@ -158,11 +158,12 @@ func SkipIntermediateEnds() Transform {
 					held = block
 					continue
 				}
-				// The held end is not discarded here. A block after an end does not
-				// mean that end was intermediate — it means the sequence has not
-				// stopped yet, and the fold's own trailing text flush is exactly such
-				// a block. Clearing it deleted every end from a dropped stream, which
-				// is the one case a caller waiting for an end cannot recover from.
+				// A non-end block means the buffered end was intermediate, so it is
+				// dropped. That is only sound while a terminal response is the last
+				// block a turn produces, which is [BlockStream]'s job rather than
+				// this one's: upstream's fold flushes text inside its terminal
+				// handler and emits nothing after the end, and so does ours.
+				held = nil
 				if !yield(block, nil) {
 					return
 				}

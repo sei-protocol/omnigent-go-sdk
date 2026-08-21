@@ -86,6 +86,11 @@ type blockState struct {
 	reasoning     []byte          // accumulated reasoning, not yet flushed
 	reasoningText strings.Builder // the section's full reasoning
 	summaryText   strings.Builder
+	// endedResponse records that a terminal response was already emitted, so the
+	// flush after the event loop knows whether it is salvaging an answer or
+	// appending to a turn that already ended.
+	endedResponse bool
+
 	// reasoningChunked records that this section streamed chunks, which suppresses
 	// the closing [ReasoningBlock] so a renderer showing both does not draw the
 	// same reasoning twice.
@@ -134,8 +139,10 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 				// has to have arrived already or it is lost. Emitting it afterwards
 				// put blocks behind a terminal error and made the salvage below
 				// unreachable for the pattern that documentation recommends.
-				state.closeText()
-				state.closeReasoning()
+				if !state.endedResponse {
+					state.closeText()
+					state.closeReasoning()
+				}
 				state.emit(nil, err)
 				return
 			}
@@ -146,8 +153,17 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 		}
 		// A sequence can end without a terminal response — a dropped stream, or a
 		// caller that stopped early. Whatever was accumulated is still the answer.
-		state.closeText()
-		state.closeReasoning()
+		//
+		// Only when no terminal arrived. endResponse already flushed before emitting
+		// its end, so anything buffered afterwards arrived after the turn finished;
+		// emitting it would put a block after the last ResponseEndBlock, and a
+		// downstream SkipIntermediateEnds reads any such block as proof the end was
+		// intermediate and drops it. Upstream's fold emits nothing after its end for
+		// the same reason.
+		if !state.endedResponse {
+			state.closeText()
+			state.closeReasoning()
+		}
 	}
 }
 
@@ -267,6 +283,7 @@ func (s *blockState) endResponse(status string, response *ResponseObject) {
 	s.closeText()
 	s.closeReasoning()
 	s.put(ResponseEndBlock{blockCtx: s.at(), Status: status, Response: response})
+	s.endedResponse = true
 	// The next terminal response is a new tool-loop iteration.
 	s.ctx.Iteration++
 }
