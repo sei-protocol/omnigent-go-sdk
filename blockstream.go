@@ -55,20 +55,11 @@ type blockState struct {
 	// in_progress, and a caller wants one start.
 	startedResponses map[string]bool
 
-	// liveResponses are the responses announced and not yet terminal. More than one
-	// means the stream is carrying interleaved responses, which is what
-	// [blockState.attributable] answers.
-	liveResponses map[string]bool
-
-	// attributable records that every block so far can be credited to one agent.
+	// liveResponses maps each announced, not-yet-terminal response to its model.
 	//
-	// A text delta names no response, so the fold can only credit it to whichever
-	// response started last. That is right while one response is live and wrong the
-	// moment two are: a mirrored sub-agent's start would otherwise re-credit the
-	// parent's own words to the child, and [OnlyAgent] would drop the parent's
-	// answer rather than merely fail to find it. Once two are live the fold stops
-	// crediting anything, because it cannot recover which is which.
-	attributable bool
+	// The model is kept because attribution is recomputed from this set rather than
+	// recorded once: see [blockState.recomputeAttribution].
+	liveResponses map[string]string
 
 	inText string // accumulated, not yet flushed
 
@@ -125,8 +116,7 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 			threshold:        threshold,
 			yield:            yield,
 			startedResponses: map[string]bool{},
-			liveResponses:    map[string]bool{},
-			attributable:     true,
+			liveResponses:    map[string]string{},
 			executions:       map[string]*ToolExecution{},
 			seenCalls:        map[string]bool{},
 			seenResults:      map[string]bool{},
@@ -247,29 +237,53 @@ func (s *blockState) fold(event Event) {
 
 // startResponse reports a response beginning, once.
 func (s *blockState) startResponse(response ResponseObject) {
-	if response.ID == "" || s.startedResponses[response.ID] {
+	if response.ID == "" {
+		return
+	}
+	// Liveness is recorded before the start-block check, not after it. A response
+	// re-announced once it has been terminal is live again, and gating liveness on
+	// "have we drawn a start for this yet" hid that overlap — which made the fold
+	// credit one response's words to another with no signal.
+	s.liveResponses[response.ID] = response.Model
+	s.recomputeAttribution()
+
+	if s.startedResponses[response.ID] {
 		return
 	}
 	s.startedResponses[response.ID] = true
-	s.liveResponses[response.ID] = true
-	if len(s.liveResponses) > 1 {
-		// Two responses live at once, so a later delta cannot be credited to either.
-		// Crediting stops for the rest of the fold rather than guessing.
-		s.attributable = false
-	}
-	// The agent and its depth come from the response's model, which is the only place
-	// the wire names them.
-	if s.attributable {
-		s.ctx.Agent = response.Model
-		s.ctx.Depth = strings.Count(response.Model, ".")
-	} else {
-		s.ctx.Agent = ""
-		s.ctx.Depth = 0
-	}
-	// The start block names its own model regardless, because that one event does say
-	// which response it belongs to.
+	// The start block names its own model regardless of attribution, because this
+	// one event does say which response it belongs to.
 	start := ResponseStartBlock{blockCtx: s.at(), Model: response.Model, ResponseID: response.ID}
 	s.put(start)
+}
+
+// recomputeAttribution credits later blocks to the one live response, or to
+// nobody.
+//
+// A text delta names no response, so the fold can only credit it to a response it
+// infers. That inference is sound while one response is live and wrong the moment
+// two are: a mirrored sub-agent's start would otherwise re-credit the parent's own
+// words to the child.
+//
+// Recomputed rather than latched off. The ambiguity is the overlap, not the
+// stream, so it ends when the overlap does. Latching meant one mirrored sub-agent
+// silenced [OnlyAgent] for the rest of a long-lived subscription — measured at one
+// block kept out of fourteen, across two later turns that each had a single live
+// response.
+//
+// Upstream carries no unattributable state at all and credits whichever response
+// it saw last. That is confidently wrong where this is honestly unknown, which is
+// the one place this package is deliberately stricter.
+func (s *blockState) recomputeAttribution() {
+	if len(s.liveResponses) != 1 {
+		s.ctx.Agent = ""
+		s.ctx.Depth = 0
+		return
+	}
+	for _, model := range s.liveResponses {
+		s.ctx.Agent = model
+		s.ctx.Depth = strings.Count(model, ".")
+	}
 }
 
 // endResponse closes whatever is open and reports the response's terminal state.
@@ -277,12 +291,15 @@ func (s *blockState) startResponse(response ResponseObject) {
 // Text and reasoning are flushed first, so a caller reading in order sees the
 // answer before the turn closes.
 func (s *blockState) endResponse(status string, response *ResponseObject) {
-	if response != nil {
-		delete(s.liveResponses, response.ID)
-	}
+	// The flush and the end block carry this response's own attribution, so the
+	// set shrinks afterwards rather than before.
 	s.closeText()
 	s.closeReasoning()
 	s.put(ResponseEndBlock{blockCtx: s.at(), Status: status, Response: response})
+	if response != nil {
+		delete(s.liveResponses, response.ID)
+	}
+	s.recomputeAttribution()
 	s.endedResponse = true
 	// The next terminal response is a new tool-loop iteration.
 	s.ctx.Iteration++
