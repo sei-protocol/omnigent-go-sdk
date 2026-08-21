@@ -21,6 +21,17 @@ type Chat struct {
 	opts      ChatOptions
 }
 
+// DefaultMaxToolCalls is the tool-call budget a turn gets when
+// [ChatOptions.MaxToolCalls] is zero.
+//
+// Chosen to sit well above a legitimate turn rather than close to one. A session
+// snapshot returns the newest 100 items, which is the server's own signal about
+// the scale of a turn, so this leaves roughly two and a half times that in
+// headroom. A caller doing something unusual raises it; the value is in the bound
+// being finite at all, because a privileged tool running this many times is
+// already a bad day.
+const DefaultMaxToolCalls = 256
+
 // ChatOptions configures how a chat drives its turns.
 type ChatOptions struct {
 	// Turn decides where a turn ends. Its zero value is the stricter rule; see
@@ -31,6 +42,15 @@ type ChatOptions struct {
 	// means the client runs none, and a call the agent makes is answered with
 	// [ErrToolNotRegistered] rather than left parked.
 	Tools *ToolRegistry
+
+	// MaxToolCalls caps how many tool calls one turn will run. Zero means the
+	// default, [DefaultMaxToolCalls]; a negative value means no cap.
+	//
+	// The cap exists because the call id is the server's to choose, so nothing
+	// else bounds how many times a turn asks this client to run privileged code.
+	// Reaching it ends the turn: the server is parked on a call this package
+	// declined, so its terminal never arrives.
+	MaxToolCalls int
 
 	// Hooks observe the turn. Optional.
 	Hooks StreamHooks
@@ -195,6 +215,19 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 	}
 }
 
+// toolBudget resolves [ChatOptions.MaxToolCalls]: zero takes the default, and a
+// negative value removes the cap.
+func (c *Chat) toolBudget() int {
+	switch {
+	case c.opts.MaxToolCalls == 0:
+		return DefaultMaxToolCalls
+	case c.opts.MaxToolCalls < 0:
+		return 0
+	default:
+		return c.opts.MaxToolCalls
+	}
+}
+
 // turnRun is one turn's mutable state.
 //
 // A struct rather than locals in [Chat.drive], because the side effects need it:
@@ -205,16 +238,18 @@ type turnRun struct {
 	tracker *turnTracker
 	yield   func(Event, error) bool
 
-	// dispatched records the calls this turn has run, keyed by agent and call id.
+	// dispatched records the calls this turn has run, keyed by call id.
 	//
 	// The wire delivers one call twice on the MCP path — [BlockStream] folds that
 	// away for a renderer, and this is the same fact on the executing side. Without
 	// it a deploy, a spend or a signature runs twice for one authorisation.
 	//
-	// Keyed by both, because each agent numbers its own calls and a sub-agent's items
-	// ride an ancestor's stream. Keyed by call alone, one agent's call_1 suppressed
-	// another's, and the suppressed call was never answered — which parks the very
-	// agent the guard exists to protect.
+	// By call id alone, because that is the identity the server itself uses: the
+	// output this package posts carries call_id and output, and nothing else, so a
+	// call id the server issues twice concurrently is one it could not route an
+	// answer to either. An earlier key added the item's agent_name, which is a
+	// field the server chooses — so one call could be run again under a second
+	// name, which is the opposite of what this guard is for.
 	//
 	// A call that failed cannot be retried under the same key. That is deliberate for
 	// a tool that moves money, and it means a re-delivery after a failed post is
@@ -377,18 +412,25 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 	if !awaitingClient {
 		return
 	}
-	// Keyed by agent as well as call: each agent numbers its own calls, and a
-	// sub-agent's items ride an ancestor's stream, so one call id names two calls.
-	key := info.AgentName + "\x00" + callID
-	if r.dispatched[key] {
+	if r.dispatched[callID] {
 		// The same call, delivered twice. Answered once — and said so, because a
 		// silent drop is indistinguishable from a call this client never saw.
-		r.emit(nil, fmt.Errorf("%w: %s already ran for agent %q",
-			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes),
-			sanitizeForError(info.AgentName, maxAgentNameRunes)))
+		r.emit(nil, fmt.Errorf("%w: %s already ran",
+			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes)))
 		return
 	}
-	r.dispatched[key] = true
+	// A budget, because the call id is the server's to choose: without one, a
+	// compromised relay turns a single prompt into unbounded invocations of the
+	// caller's most privileged code, and only the caller's deadline stops it.
+	if limit := r.chat.toolBudget(); limit > 0 && len(r.dispatched) >= limit {
+		r.emit(nil, fmt.Errorf("%w: %d in one turn; raise ChatOptions.MaxToolCalls "+
+			"if this turn is legitimate", ErrToolCallBudget, limit))
+		// The server is parked on a call this package will not answer, so its
+		// terminal never arrives.
+		r.unfinishable = true
+		return
+	}
+	r.dispatched[callID] = true
 	r.runTool(ctx, info)
 }
 

@@ -125,6 +125,13 @@ var (
 	// caller counting tool use would be quietly wrong.
 	ErrToolCallDuplicated = errors.New("the call was already run")
 
+	// ErrToolCallBudget means one turn asked this client to run more tools than
+	// [ChatOptions.MaxToolCalls] allows.
+	//
+	// A legitimate turn does not reach it. A server that issues a fresh call id
+	// per ask does, which is the case the budget exists for.
+	ErrToolCallBudget = errors.New("the turn exceeded its tool-call budget")
+
 	// ErrInputDenied means the server refused an input synchronously, saying why.
 	//
 	// Distinct from a transport failure: the send reached the server and the

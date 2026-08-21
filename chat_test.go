@@ -695,14 +695,20 @@ func TestThePromptIsPostedOnAnyFirstFrame(t *testing.T) {
 	}
 }
 
-// TestACollidingCallIDAcrossAgentsRunsBoth pins that the dispatch guard is scoped to
-// the agent as well as the call.
+// TestOneCallIDRunsOnceWhateverAgentNameItCarries pins that the dispatch guard is
+// scoped to the call, and to nothing the server also chooses.
 //
-// Each agent numbers its own calls, and a sub-agent's items ride an ancestor's
-// stream, so one call id names two calls. Keyed by call alone, one agent's call
-// suppressed another's — and the suppressed one was never answered, parking the very
-// agent the guard exists to protect.
-func TestACollidingCallIDAcrossAgentsRunsBoth(t *testing.T) {
+// This test previously asserted the opposite, on the reasoning that each agent
+// numbers its own calls so one id could name two. The server's own contract says
+// otherwise: the output this package posts carries call_id and output and nothing
+// else, so a call id issued twice concurrently is one the server could not route
+// an answer to either. Upstream's client posts the same two fields and guards
+// nothing at all.
+//
+// Keying on the item's agent_name made the guard defeatable by the party it
+// defends against — the same call, replayed under a second name, ran a second
+// time. A deploy, a spend or a signature is exactly what that costs.
+func TestOneCallIDRunsOnceWhateverAgentNameItCarries(t *testing.T) {
 	t.Parallel()
 
 	call := func(agent string) string {
@@ -714,35 +720,43 @@ func TestACollidingCallIDAcrossAgentsRunsBoth(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
 	})
 
-	tools := NewToolRegistry()
 	var mu sync.Mutex
-	var agents []string
+	var ran []string
+	tools := &ToolRegistry{}
 	if err := tools.Register("Echo", nil, func(_ context.Context, info ToolCallInfo) (string, error) {
 		mu.Lock()
-		defer mu.Unlock()
-		agents = append(agents, info.AgentName)
+		ran = append(ran, info.AgentName)
+		mu.Unlock()
 		return "ok", nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	chat, _ := client.Chat("conv_1", ChatOptions{
-		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	chat, err := client.Chat("conv_1", ChatOptions{
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Tools: tools,
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	for range chat.Send(ctx, "hi") {
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var duplicated error
+	for _, err := range chat.Send(t.Context(), "hi") {
+		if errors.Is(err, ErrToolCallDuplicated) {
+			duplicated = err
+		}
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(agents) != 2 {
-		t.Fatalf("ran for %v; two agents each asked for their own call_1", agents)
+	if len(ran) != 1 {
+		t.Errorf("the tool ran %d times for one call id (%v), want 1", len(ran), ran)
 	}
-	// Both answered: an unanswered call parks its agent until the deadline.
-	if got := server.postedTypes(); len(got) != 3 {
-		t.Errorf("posted %v, want the prompt and two outputs", got)
+	if duplicated == nil {
+		t.Error("the second delivery was dropped without saying so; a silent drop is " +
+			"indistinguishable from a call this client never saw")
 	}
+	_ = server
 }
 
 // TestATrueDuplicateRunsOnceAndSaysSo pins the other half: the same agent's same
