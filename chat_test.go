@@ -588,16 +588,25 @@ func TestAPanickingApprovalHookDeclines(t *testing.T) {
 	}
 }
 
-// TestAToolCallCarriesItsResponseAndIteration pins two fields a tool reads to scope
-// an idempotency guard. Documented and always zero is worse than absent.
-func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
+// TestAToolCallCarriesWhatItsItemCarries pins that ToolCallInfo reports the item
+// and nothing synthesised.
+//
+// This test used to assert a ResponseID, and passed only because its fixture sent
+// response.created — an event event.go says a live turn never carries, because the
+// server drops the created half of the created/in_progress pair at the publish
+// chokepoint. So the field it checked was empty in production and the suite could
+// not see it.
+//
+// The fixture now sends in_progress, which is what a subscription actually gets.
+func TestAToolCallCarriesWhatItsItemCarries(t *testing.T) {
 	t.Parallel()
 
 	_, client := newChatServer(t, nil, []string{
 		echoFrame,
-		`{"type":"response.created","response":{"id":"r7","model":"coder","status":"in_progress"}}`,
-		`{"type":"response.output_item.done","item":{"type":"function_call",` +
-			`"status":"action_required","call_id":"c1","name":"Echo","arguments":"{}"}}`,
+		`{"type":"response.in_progress","response":{"id":"r7","model":"coder","status":"in_progress"}}`,
+		`{"type":"response.output_item.done","item":{"type":"function_call","id":"item_9",` +
+			`"status":"action_required","call_id":"c1","name":"Echo","arguments":"{}",` +
+			`"agent_name":"coder.researcher"}}`,
 		`{"type":"response.completed","response":{"id":"r7","status":"completed"}}`,
 	})
 	tools := NewToolRegistry()
@@ -608,16 +617,28 @@ func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+
+	var observed string
 	chat, _ := client.Chat("conv_1", ChatOptions{
-		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Tools: tools,
+		Hooks: StreamHooks{OnToolCallStart: func(c ToolCallStartCtx) { observed = c.AgentName }},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for range chat.Send(ctx, "hi") {
 	}
 
-	if seen.ResponseID != "r7" {
-		t.Errorf("ResponseID = %q, want r7", seen.ResponseID)
+	if seen.CallID != "c1" {
+		t.Errorf("CallID = %q, want c1", seen.CallID)
+	}
+	if seen.ItemID != "item_9" {
+		t.Errorf("ItemID = %q, want item_9", seen.ItemID)
+	}
+	// The observer gets the agent name; the tool does not need it to answer, and
+	// it is a field the server chooses.
+	if observed != "coder.researcher" {
+		t.Errorf("OnToolCallStart saw agent %q, want coder.researcher", observed)
 	}
 }
 
@@ -725,7 +746,7 @@ func TestOneCallIDRunsOnceWhateverAgentNameItCarries(t *testing.T) {
 	tools := &ToolRegistry{}
 	if err := tools.Register("Echo", nil, func(_ context.Context, info ToolCallInfo) (string, error) {
 		mu.Lock()
-		ran = append(ran, info.AgentName)
+		ran = append(ran, info.CallID)
 		mu.Unlock()
 		return "ok", nil
 	}); err != nil {

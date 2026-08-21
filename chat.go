@@ -267,6 +267,10 @@ type turnRun struct {
 	// comes, and the cause is already reported.
 	unfinishable bool
 
+	// announced records the responses OnResponseStart has fired for, so the three
+	// events that can announce one response produce one start.
+	announced map[string]bool
+
 	// stopped records a caller that stopped reading. Nothing may yield after that:
 	// calling a spent yield panics the caller's range loop.
 	stopped bool
@@ -307,9 +311,16 @@ func (r *turnRun) track(event Event) {
 		r.tracker.observeStatus(e)
 	case SessionSupersededEvent:
 		r.tracker.observeSuperseded(e)
+	// All three announce a response. The server drops the created half of the
+	// created/in_progress pair at its publish chokepoint, so a subscription sees
+	// in_progress alone — keying on created meant this never fired on a live turn
+	// and every response id it reported was empty. Upstream reads the same three.
 	case ResponseCreatedEvent:
-		r.responseID = e.Response.ID
-		r.iteration = 0
+		r.beginResponse(e.Response.ID)
+	case InProgressEvent:
+		r.beginResponse(e.Response.ID)
+	case QueuedEvent:
+		r.beginResponse(e.Response.ID)
 	case ResponseCompletedEvent:
 		r.tracker.observeResponseTerminal(e.Response.ID, nil)
 	case ResponseCancelledEvent:
@@ -330,7 +341,11 @@ func (r *turnRun) act(ctx context.Context, event Event) {
 	hooks := r.chat.opts.Hooks
 	switch e := event.(type) {
 	case ResponseCreatedEvent:
-		fire(r.report, "OnResponseStart", hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
+		r.announceResponse(hooks, e.Response)
+	case InProgressEvent:
+		r.announceResponse(hooks, e.Response)
+	case QueuedEvent:
+		r.announceResponse(hooks, e.Response)
 
 	case ReasoningStartedEvent:
 		fire(r.report, "OnReasoningStart", hooks.OnReasoningStart, ReasoningStartCtx{ResponseID: r.responseID})
@@ -367,6 +382,35 @@ func (r *turnRun) act(ctx context.Context, event Event) {
 	}
 }
 
+// beginResponse records the response a turn's later events belong to.
+//
+// Idempotent, because all three announcing events can arrive for one response.
+// Taking the id from whichever comes first is what makes an id available at all.
+func (r *turnRun) beginResponse(id string) {
+	if id == "" || r.responseID == id {
+		return
+	}
+	r.responseID = id
+	r.iteration = 0
+}
+
+// announceResponse fires OnResponseStart once for a response.
+//
+// Once, not once per announcing event: a server may send created, queued and
+// in_progress for the same response, and a caller counting starts would count
+// three.
+func (r *turnRun) announceResponse(hooks StreamHooks, response ResponseObject) {
+	if response.ID == "" || r.announced[response.ID] {
+		return
+	}
+	if r.announced == nil {
+		r.announced = map[string]bool{}
+	}
+	r.announced[response.ID] = true
+	fire(r.report, "OnResponseStart", hooks.OnResponseStart,
+		ResponseStartCtx{ResponseID: response.ID, Model: response.Model})
+}
+
 func (r *turnRun) endResponse(response ResponseObject) {
 	fire(r.report, "OnResponseEnd", r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
 	// Counts passes for the payloads that report one. A turn reaches one terminal
@@ -398,15 +442,15 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 		executedBy = "client"
 	}
 	info := ToolCallInfo{
-		Name:       name,
-		Arguments:  itemArguments(e.Item),
-		CallID:     callID,
-		AgentName:  itemString(e.Item, "agent_name"),
-		ResponseID: r.responseID,
-		Iteration:  r.iteration,
+		Name:      name,
+		Arguments: itemArguments(e.Item),
+		CallID:    callID,
+		ItemID:    itemString(e.Item, "id"),
 	}
+	// Read for the observer, not carried on info: see [ToolCallInfo].
+	agentName := itemString(e.Item, "agent_name")
 	fire(r.report, "OnToolCallStart", r.chat.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
-		Name: info.Name, CallID: info.CallID, AgentName: info.AgentName,
+		Name: info.Name, CallID: info.CallID, AgentName: agentName,
 		Arguments: info.Arguments, ExecutedBy: executedBy,
 	})
 	if !awaitingClient {

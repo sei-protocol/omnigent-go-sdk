@@ -19,15 +19,29 @@ type ToolCallInfo struct {
 	// CallID identifies the call, and is what the result is posted against.
 	CallID string
 
-	// AgentName is the agent that called it, e.g. "coder.researcher".
-	AgentName string
-
-	// ResponseID is the response the call belongs to.
-	ResponseID string
-
-	// Iteration is the tool-loop pass within the response, from zero.
-	Iteration int
+	// ItemID is the conversation item the call arrived on, or empty when the
+	// server sent none.
+	ItemID string
 }
+
+// This carries what the item carries and nothing more.
+//
+// A response id, a tool-loop iteration and an agent name would all be useful, and
+// none of them is on the wire here: an item declares created_at, created_by, data,
+// id, response_id, status and type, and the call's own payload declares call_id,
+// name, arguments and model. Upstream draws the same line, and says why — its
+// responses-API tool info carries that triple because the responses stream
+// supplies it, and its sessions-API tool info carries only what an item does.
+//
+// Earlier revisions of this type declared ResponseID and Iteration and filled
+// them from the reader's own running state. Both were wrong in practice, because
+// the state they read from is keyed on an event a live turn never sends. A field
+// that is always empty is worse than an absent one: a caller writes an audit
+// record against it.
+//
+// [StreamHooks.OnToolCallStart] still reports the agent name, because an observer
+// wants everything the item offers. A tool does not need it to answer, and it is
+// a field the server chooses, so it is not identity.
 
 // ToolFunc runs one client-side tool call.
 //
