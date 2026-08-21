@@ -17,7 +17,7 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Eight conformance tests check every exported type the decoder
+  declares. Nine conformance tests check every exported type the decoder
   reaches, across five dimensions. They do not check a field's presence: omitting
   a property the document declares passes, deliberately. They do check an event's
   presence: `TestEveryUnionMemberIsRegistered` fails when the document publishes
