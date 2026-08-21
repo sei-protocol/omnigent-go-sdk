@@ -450,9 +450,10 @@ func TestSameEndpointIgnoresHostCase(t *testing.T) {
 // ahead of the host and port comparisons.
 //
 // Those comparisons reason about hosts and ports, and effectivePort answers only
-// for http and https, so a same-host Location naming any other scheme used to
-// read as the same endpoint and clear every gate. A caller-supplied transport
-// that registers a protocol would then carry the credential there.
+// for http and https, so without this gate a same-host Location naming any other
+// scheme reads as the same endpoint and clears every one of them. A
+// caller-supplied transport that registers a protocol then carries the credential
+// there.
 func TestRedirectRefusesASchemeThePackageDoesNotSpeak(t *testing.T) {
 	t.Parallel()
 

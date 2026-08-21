@@ -117,6 +117,80 @@ var (
 	// reasoning and what Go's own rule does instead.
 	ErrUnsafeRedirect = errors.New("refused to follow an unsafe redirect")
 
+	// ErrToolCallDuplicated reports a call the wire delivered twice, which this
+	// client ran once.
+	//
+	// Not a failure: the answer went back for the first delivery. Reported because a
+	// silent drop is indistinguishable from a call this client never saw, and a
+	// caller counting tool use would be quietly wrong.
+	ErrToolCallDuplicated = errors.New("the call was already run")
+
+	// ErrToolCallBudget means one turn asked this client to run more tools than
+	// [ChatOptions.MaxToolCalls] allows.
+	//
+	// A legitimate turn does not reach it. A server that issues a fresh call id
+	// per ask does, which is the case the budget exists for.
+	ErrToolCallBudget = errors.New("the turn exceeded its tool-call budget")
+
+	// ErrInputDenied means the server refused an input synchronously, saying why.
+	//
+	// Distinct from a transport failure: the send reached the server and the
+	// server answered. A denied prompt is the case worth naming, because the
+	// turn it would have started never begins, so nothing on the stream can end
+	// it and the read otherwise runs to the caller's deadline.
+	ErrInputDenied = errors.New("the server denied the input")
+
+	// ErrHookPanicked reports that a caller-supplied hook panicked.
+	//
+	// The turn continues, and an approval hook that panics declines. Reported
+	// because the server chooses the fields a hook reads, so it chooses the input
+	// that trips one — and an unreported panic is a denial of service with no signal
+	// where a caller looks.
+	ErrHookPanicked = errors.New("a hook panicked")
+
+	// ErrTurnAlreadyRead reports a second attempt to read one turn.
+	//
+	// Refused rather than repeated: reading again would post the prompt a second
+	// time, and the server would answer both. A caller wanting two turns asks for
+	// two.
+	ErrTurnAlreadyRead = errors.New("this turn was already read")
+
+	// ErrTurnIncomplete reports that the event stream ended before the turn did.
+	//
+	// The turn may still be running server-side. Reported rather than treated as an
+	// end, because a caller reading the sequence as complete would take a partial
+	// answer for the whole one.
+	ErrTurnIncomplete = errors.New("the stream ended before the turn did")
+
+	// ErrToolNotRegistered reports that the agent called a tool this client does
+	// not have.
+	//
+	// The turn is not left parked on it: an output naming the mismatch is posted
+	// anyway, because a server waiting for a call it will never receive reads as a
+	// hung agent rather than as a missing tool.
+	ErrToolNotRegistered = errors.New("no such tool is registered")
+
+	// ErrToolFailed reports that a registered tool returned an error or panicked.
+	//
+	// Its output is posted as the error text, for the same reason: the turn is
+	// parked on the call, so a failing tool still has to answer.
+	ErrToolFailed = errors.New("the tool failed")
+
+	// ErrTurnFailed reports that the server ended a turn without an answer.
+	//
+	// The turn reached the server and the server reported a failure, so the wrapped
+	// message is the server's own reason. Distinct from a transport failure, which
+	// says nothing about whether the turn ran.
+	ErrTurnFailed = errors.New("the turn failed")
+
+	// ErrTurnSuperseded reports that the session a turn was reading has been
+	// replaced, and names the conversation that replaced it.
+	//
+	// Not followed automatically: a caller holding the old session id would keep
+	// addressing a retired conversation, and which session to address next is the
+	// caller's decision.
+	ErrTurnSuperseded = errors.New("the session was superseded")
+
 	// ErrRedirectNotFollowed reports a redirect this package could not follow,
 	// as distinct from one it refused. An upload streams its body, so there is
 	// nothing to replay at the new location and net/http hands the response back
@@ -178,6 +252,10 @@ const maxRequestIDRunes = 80
 // length of each are the server's choice; [Sessions.ResolveAgent] caps the count
 // and this caps each entry.
 const maxAgentNameRunes = 60
+
+// maxToolNameRunes bounds a tool name inside an error. The name comes from the
+// model by way of the server, so its length is not the caller's choice.
+const maxToolNameRunes = 60
 
 // Error is the interface every server-response error in this package satisfies.
 //

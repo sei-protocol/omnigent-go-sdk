@@ -4,8 +4,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -159,4 +161,52 @@ func unresolvedRefs(text string, names, members, isType map[string]bool) []strin
 		bad = append(bad, ref)
 	}
 	return bad
+}
+
+// TestThePackageDocIsNotSevered pins that every comment line above the package
+// clause reaches godoc.
+//
+// A doc comment is the one comment group immediately before `package`, so a
+// single blank line inside it silently truncates the published documentation at
+// that point. This package's own doc.go carried such a line: 139 of 256 lines
+// and six of eleven sections stopped rendering, and `go doc .` opened on a
+// symbol the package deliberately does not have.
+//
+// Nothing else catches it. gofmt does not mind, and [TestEveryDocLinkResolves]
+// walks every comment group rather than the attached one, so the orphaned half
+// still passes its link check.
+func TestThePackageDocIsNotSevered(t *testing.T) {
+	t.Parallel()
+
+	const doc = "doc.go"
+	raw, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatalf("read %s: %v", doc, err)
+	}
+	lines := strings.Split(string(raw), "\n")
+
+	pkg := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "package ") })
+	if pkg < 0 {
+		t.Fatalf("%s declares no package", doc)
+	}
+
+	// Walk back over the group that actually reaches godoc.
+	attached := 0
+	for i := pkg - 1; i >= 0 && strings.HasPrefix(lines[i], "//"); i-- {
+		attached++
+	}
+	total := 0
+	for _, line := range lines[:pkg] {
+		if strings.HasPrefix(line, "//") {
+			total++
+		}
+	}
+	if total < 50 {
+		t.Fatalf("found only %d comment lines above the package clause; the scan is wrong", total)
+	}
+	if attached != total {
+		t.Errorf("%d of %d comment lines reach godoc: a blank line inside the package "+
+			"comment truncates it at line %d. Use // for a spacer line.",
+			attached, total, pkg-attached)
+	}
 }
