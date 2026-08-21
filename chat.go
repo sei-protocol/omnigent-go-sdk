@@ -24,13 +24,13 @@ type Chat struct {
 // DefaultMaxToolCalls is the tool-call budget a turn gets when
 // [ChatOptions.MaxToolCalls] is zero.
 //
-// Chosen to sit well above a legitimate turn rather than close to one. A session
-// snapshot returns the newest 100 items, which is the server's own signal about
-// the scale of a turn, so this leaves roughly two and a half times that in
-// headroom. A caller doing something unusual raises it; the value is in the bound
-// being finite at all, because a privileged tool running this many times is
-// already a bad day.
-const DefaultMaxToolCalls = 256
+// Chosen to sit well above a legitimate turn rather than close to one, because
+// reaching it parks the agent. A session snapshot returns the newest 100 items,
+// which is the server's own signal about the scale of a turn, so this leaves an
+// order of magnitude of headroom. A caller doing something unusual raises it; the
+// value is in the bound being finite at all, since nothing else stops a server
+// that issues a fresh call id per ask.
+const DefaultMaxToolCalls = 1024
 
 // ChatOptions configures how a chat drives its turns.
 type ChatOptions struct {
@@ -516,7 +516,7 @@ func (r *turnRun) decideElicitation(e ElicitationRequestEvent) (accept bool) {
 				sanitizeForError(fmt.Sprint(recovered), maxErrorFieldRunes)))
 		}
 	}()
-	return hook(elicitationCtxOf(r.chat.sessionID, e))
+	return hook(elicitationCtxOf(r.chat.sessionID, r.responseID, e))
 }
 
 // elicitationTarget reports the session whose resolve route owns a request.
@@ -532,11 +532,19 @@ func elicitationTarget(reading string, e ElicitationRequestEvent) string {
 	return reading
 }
 
-func elicitationCtxOf(fallbackSession string, e ElicitationRequestEvent) ElicitationCtx {
+func elicitationCtxOf(fallbackSession, responseID string, e ElicitationRequestEvent) ElicitationCtx {
 	ctx := ElicitationCtx{
-		SessionID:     elicitationTarget(fallbackSession, e),
-		ElicitationID: e.ElicitationID,
-		Message:       e.Params.Message,
+		SessionID:       elicitationTarget(fallbackSession, e),
+		ElicitationID:   e.ElicitationID,
+		Message:         e.Params.Message,
+		RequestedSchema: e.Params.RequestedSchema,
+		ResponseID:      responseID,
+	}
+	if e.Params.Mode != nil {
+		ctx.Mode = *e.Params.Mode
+	}
+	if e.Params.URL != nil {
+		ctx.URL = *e.Params.URL
 	}
 	if e.Params.Phase != nil {
 		ctx.Phase = *e.Params.Phase

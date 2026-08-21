@@ -140,6 +140,31 @@ type ElicitationCtx struct {
 	// ContentPreview is a preview of what would run, empty when the server sent
 	// none.
 	ContentPreview string
+
+	// Mode is how the server expects this to be answered: "form" for a schema the
+	// caller fills in, "url" for an out-of-band flow at [ElicitationCtx.URL].
+	// Empty when the server does not say.
+	//
+	// A decision made without it is a decision made blind, which is why upstream's
+	// own client passes it. Note that a "form" answer needs values this package
+	// cannot yet send: see [StreamHooks.OnElicitation].
+	Mode string
+
+	// URL is where a "url" mode flow happens, for example an OAuth authorize
+	// endpoint. Empty in any other mode.
+	//
+	// Show it before approving. This package refuses an off-host redirect on the
+	// unary path for the same reason a destination matters, and an approval that
+	// hides the destination gives that up.
+	URL string
+
+	// RequestedSchema is the shape a "form" mode answer should take. Nil when the
+	// server does not send one.
+	RequestedSchema map[string]any
+
+	// ResponseID is the response in flight when the server raised this, or empty
+	// when none is. It is what correlates an approval with the work it gates.
+	ResponseID string
 }
 
 // fire calls a hook when one is set, and turns a panic in it into an error.
