@@ -113,7 +113,11 @@ func OnlyAgent(agent string) Transform {
 					}
 					continue
 				}
-				if agent != "" && block.Context().Agent != agent {
+				// A nil block with no error is not a shape the fold produces, but
+				// Transform is exported and takes any sequence. The other four
+				// transforms pass it through rather than reading it, so this one does
+				// too: a filter is not the place to decide a caller's input is wrong.
+				if agent != "" && block != nil && block.Context().Agent != agent {
 					continue
 				}
 				if !yield(block, nil) {
@@ -154,6 +158,11 @@ func SkipIntermediateEnds() Transform {
 					held = block
 					continue
 				}
+				// A non-end block means the buffered end was intermediate, so it is
+				// dropped. That is only sound while a terminal response is the last
+				// block a turn produces, which is [BlockStream]'s job rather than
+				// this one's: upstream's fold flushes text inside its terminal
+				// handler and emits nothing after the end, and so does ours.
 				held = nil
 				if !yield(block, nil) {
 					return

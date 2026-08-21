@@ -1,6 +1,7 @@
 package omnigent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -54,20 +55,11 @@ type blockState struct {
 	// in_progress, and a caller wants one start.
 	startedResponses map[string]bool
 
-	// liveResponses are the responses announced and not yet terminal. More than one
-	// means the stream is carrying interleaved responses, which is what
-	// [blockState.attributable] answers.
-	liveResponses map[string]bool
-
-	// attributable records that every block so far can be credited to one agent.
+	// liveResponses maps each announced, not-yet-terminal response to its model.
 	//
-	// A text delta names no response, so the fold can only credit it to whichever
-	// response started last. That is right while one response is live and wrong the
-	// moment two are: a mirrored sub-agent's start would otherwise re-credit the
-	// parent's own words to the child, and [OnlyAgent] would drop the parent's
-	// answer rather than merely fail to find it. Once two are live the fold stops
-	// crediting anything, because it cannot recover which is which.
-	attributable bool
+	// The model is kept because attribution is recomputed from this set rather than
+	// recorded once: see [blockState.recomputeAttribution].
+	liveResponses map[string]string
 
 	inText string // accumulated, not yet flushed
 
@@ -75,11 +67,21 @@ type blockState struct {
 	// string: appending to a string copies the whole answer per delta, which is
 	// quadratic in the answer's length and runs on the goroutine draining the
 	// stream.
-	fullText      strings.Builder
-	inReasoning   bool
-	reasoning     string // accumulated reasoning, not yet flushed
-	reasoningText string // the section's full reasoning
-	summaryText   string
+	fullText    strings.Builder
+	inReasoning bool
+	// The same reason fullText is a Builder: appending to a string copies the
+	// whole section per delta. Measured before this shape, at 31 MiB of reasoning
+	// across four frames: 37s of CPU against 27ms for the text path, and 1.4 GB of
+	// allocation to fold 343 KB. reasoning is a byte slice rather than a Builder
+	// because the line flush below slices it, which a Builder cannot do.
+	reasoning     []byte          // accumulated reasoning, not yet flushed
+	reasoningText strings.Builder // the section's full reasoning
+	summaryText   strings.Builder
+	// endedResponse records that a terminal response was already emitted, so the
+	// flush after the event loop knows whether it is salvaging an answer or
+	// appending to a turn that already ended.
+	endedResponse bool
+
 	// reasoningChunked records that this section streamed chunks, which suppresses
 	// the closing [ReasoningBlock] so a renderer showing both does not draw the
 	// same reasoning twice.
@@ -114,18 +116,25 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 			threshold:        threshold,
 			yield:            yield,
 			startedResponses: map[string]bool{},
-			liveResponses:    map[string]bool{},
-			attributable:     true,
+			liveResponses:    map[string]string{},
 			executions:       map[string]*ToolExecution{},
 			seenCalls:        map[string]bool{},
 			seenResults:      map[string]bool{},
 		}
 		for event, err := range events {
 			if err != nil {
-				if !state.emit(nil, err) {
-					return
+				// Flushed before the error, not after. [Client.Stream] documents an
+				// error step as the last one, so a caller writing the ordinary
+				// `if err != nil { return }` stops here — and the accumulated answer
+				// has to have arrived already or it is lost. Emitting it afterwards
+				// put blocks behind a terminal error and made the salvage below
+				// unreachable for the pattern that documentation recommends.
+				if !state.endedResponse {
+					state.closeText()
+					state.closeReasoning()
 				}
-				continue
+				state.emit(nil, err)
+				return
 			}
 			state.fold(event)
 			if state.stopped {
@@ -134,8 +143,17 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 		}
 		// A sequence can end without a terminal response — a dropped stream, or a
 		// caller that stopped early. Whatever was accumulated is still the answer.
-		state.closeText()
-		state.closeReasoning()
+		//
+		// Only when no terminal arrived. endResponse already flushed before emitting
+		// its end, so anything buffered afterwards arrived after the turn finished;
+		// emitting it would put a block after the last ResponseEndBlock, and a
+		// downstream SkipIntermediateEnds reads any such block as proof the end was
+		// intermediate and drops it. Upstream's fold emits nothing after its end for
+		// the same reason.
+		if !state.endedResponse {
+			state.closeText()
+			state.closeReasoning()
+		}
 	}
 }
 
@@ -219,29 +237,53 @@ func (s *blockState) fold(event Event) {
 
 // startResponse reports a response beginning, once.
 func (s *blockState) startResponse(response ResponseObject) {
-	if response.ID == "" || s.startedResponses[response.ID] {
+	if response.ID == "" {
+		return
+	}
+	// Liveness is recorded before the start-block check, not after it. A response
+	// re-announced once it has been terminal is live again, and gating liveness on
+	// "have we drawn a start for this yet" hid that overlap — which made the fold
+	// credit one response's words to another with no signal.
+	s.liveResponses[response.ID] = response.Model
+	s.recomputeAttribution()
+
+	if s.startedResponses[response.ID] {
 		return
 	}
 	s.startedResponses[response.ID] = true
-	s.liveResponses[response.ID] = true
-	if len(s.liveResponses) > 1 {
-		// Two responses live at once, so a later delta cannot be credited to either.
-		// Crediting stops for the rest of the fold rather than guessing.
-		s.attributable = false
-	}
-	// The agent and its depth come from the response's model, which is the only place
-	// the wire names them.
-	if s.attributable {
-		s.ctx.Agent = response.Model
-		s.ctx.Depth = strings.Count(response.Model, ".")
-	} else {
-		s.ctx.Agent = ""
-		s.ctx.Depth = 0
-	}
-	// The start block names its own model regardless, because that one event does say
-	// which response it belongs to.
+	// The start block names its own model regardless of attribution, because this
+	// one event does say which response it belongs to.
 	start := ResponseStartBlock{blockCtx: s.at(), Model: response.Model, ResponseID: response.ID}
 	s.put(start)
+}
+
+// recomputeAttribution credits later blocks to the one live response, or to
+// nobody.
+//
+// A text delta names no response, so the fold can only credit it to a response it
+// infers. That inference is sound while one response is live and wrong the moment
+// two are: a mirrored sub-agent's start would otherwise re-credit the parent's own
+// words to the child.
+//
+// Recomputed rather than latched off. The ambiguity is the overlap, not the
+// stream, so it ends when the overlap does. Latching meant one mirrored sub-agent
+// silenced [OnlyAgent] for the rest of a long-lived subscription — measured at one
+// block kept out of fourteen, across two later turns that each had a single live
+// response.
+//
+// Upstream carries no unattributable state at all and credits whichever response
+// it saw last. That is confidently wrong where this is honestly unknown, which is
+// the one place this package is deliberately stricter.
+func (s *blockState) recomputeAttribution() {
+	if len(s.liveResponses) != 1 {
+		s.ctx.Agent = ""
+		s.ctx.Depth = 0
+		return
+	}
+	for _, model := range s.liveResponses {
+		s.ctx.Agent = model
+		s.ctx.Depth = strings.Count(model, ".")
+	}
 }
 
 // endResponse closes whatever is open and reports the response's terminal state.
@@ -249,12 +291,16 @@ func (s *blockState) startResponse(response ResponseObject) {
 // Text and reasoning are flushed first, so a caller reading in order sees the
 // answer before the turn closes.
 func (s *blockState) endResponse(status string, response *ResponseObject) {
-	if response != nil {
-		delete(s.liveResponses, response.ID)
-	}
+	// The flush and the end block carry this response's own attribution, so the
+	// set shrinks afterwards rather than before.
 	s.closeText()
 	s.closeReasoning()
 	s.put(ResponseEndBlock{blockCtx: s.at(), Status: status, Response: response})
+	if response != nil {
+		delete(s.liveResponses, response.ID)
+	}
+	s.recomputeAttribution()
+	s.endedResponse = true
 	// The next terminal response is a new tool-loop iteration.
 	s.ctx.Iteration++
 }
@@ -280,18 +326,25 @@ func (s *blockState) appendReasoning(delta string, summary bool) {
 		s.beginReasoning()
 	}
 	if summary {
-		s.summaryText += delta
+		s.summaryText.WriteString(delta)
 	} else {
-		s.reasoningText += delta
+		s.reasoningText.WriteString(delta)
 	}
-	s.reasoning += delta
+	// Scan only what arrived. Rescanning the whole buffer per delta is the other
+	// half of the quadratic cost, and it is the half a reasoning section with no
+	// newlines pays in full: the buffer grows to the section's length and every
+	// delta walks all of it.
+	scanned := len(s.reasoning)
+	s.reasoning = append(s.reasoning, delta...)
 	for {
-		line := strings.IndexByte(s.reasoning, '\n')
+		line := bytes.IndexByte(s.reasoning[scanned:], '\n')
 		if line < 0 {
 			break
 		}
-		text := s.reasoning[:line]
+		line += scanned
+		text := string(s.reasoning[:line])
 		s.reasoning = s.reasoning[line+1:]
+		scanned = 0
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
@@ -309,21 +362,21 @@ func (s *blockState) closeReasoning() {
 	if !s.inReasoning {
 		return
 	}
-	if rest := strings.TrimSpace(s.reasoning); rest != "" {
+	if rest := strings.TrimSpace(string(s.reasoning)); rest != "" {
 		s.reasoningChunked = true
 		s.put(ReasoningChunk{blockCtx: s.at(), Text: rest})
 	}
-	if !s.reasoningChunked && (s.reasoningText != "" || s.summaryText != "") {
+	if !s.reasoningChunked && (s.reasoningText.Len() > 0 || s.summaryText.Len() > 0) {
 		s.put(ReasoningBlock{
 			blockCtx:      s.at(),
-			ReasoningText: s.reasoningText,
-			SummaryText:   s.summaryText,
+			ReasoningText: s.reasoningText.String(),
+			SummaryText:   s.summaryText.String(),
 		})
 	}
 	s.inReasoning = false
-	s.reasoning = ""
-	s.reasoningText = ""
-	s.summaryText = ""
+	s.reasoning = s.reasoning[:0]
+	s.reasoningText.Reset()
+	s.summaryText.Reset()
 	s.reasoningChunked = false
 }
 

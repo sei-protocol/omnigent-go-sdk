@@ -21,6 +21,17 @@ type Chat struct {
 	opts      ChatOptions
 }
 
+// DefaultMaxToolCalls is the tool-call budget a turn gets when
+// [ChatOptions.MaxToolCalls] is zero.
+//
+// Chosen to sit well above a legitimate turn rather than close to one, because
+// reaching it parks the agent. A session snapshot returns the newest 100 items,
+// which is the server's own signal about the scale of a turn, so this leaves an
+// order of magnitude of headroom. A caller doing something unusual raises it; the
+// value is in the bound being finite at all, since nothing else stops a server
+// that issues a fresh call id per ask.
+const DefaultMaxToolCalls = 1024
+
 // ChatOptions configures how a chat drives its turns.
 type ChatOptions struct {
 	// Turn decides where a turn ends. Its zero value is the stricter rule; see
@@ -31,6 +42,15 @@ type ChatOptions struct {
 	// means the client runs none, and a call the agent makes is answered with
 	// [ErrToolNotRegistered] rather than left parked.
 	Tools *ToolRegistry
+
+	// MaxToolCalls caps how many tool calls one turn will run. Zero means the
+	// default, [DefaultMaxToolCalls]; a negative value means no cap.
+	//
+	// The cap exists because the call id is the server's to choose, so nothing
+	// else bounds how many times a turn asks this client to run privileged code.
+	// Reaching it ends the turn: the server is parked on a call this package
+	// declined, so its terminal never arrives.
+	MaxToolCalls int
 
 	// Hooks observe the turn. Optional.
 	Hooks StreamHooks
@@ -153,6 +173,14 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 		if err != nil {
 			return fmt.Errorf("send prompt: %w", err)
 		}
+		// A refusal arrives as a 200 the caller has to read. Reported here rather
+		// than ignored, because a denied prompt starts no turn: the anchor stays
+		// empty, no rule can ever cross the boundary, and the read would otherwise
+		// run to the caller's deadline and blame the stream.
+		if accepted.Denied {
+			return fmt.Errorf("send prompt: %w: %s", ErrInputDenied,
+				sanitizeForError(accepted.Reason, maxErrorFieldRunes))
+		}
 		run.tracker.anchorOn(anchorOf(accepted))
 		return nil
 	}
@@ -170,7 +198,7 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 		// in that order. Before the end check, because the server parks the turn on a
 		// tool call and an approval, and its terminal only follows once they answer.
 		run.act(ctx, event)
-		if run.stopped {
+		if run.stopped || run.unfinishable {
 			return
 		}
 		if run.tracker.ended() {
@@ -182,8 +210,21 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 	}
 	// Reported rather than treated as an end: a caller reading the sequence as
 	// complete would take a partial answer for the whole one.
-	if !run.tracker.ended() && !run.stopped {
+	if !run.tracker.ended() && !run.stopped && !run.unfinishable {
 		run.emit(nil, fmt.Errorf("turn on session %s: %w", c.sessionID, ErrTurnIncomplete))
+	}
+}
+
+// toolBudget resolves [ChatOptions.MaxToolCalls]: zero takes the default, and a
+// negative value removes the cap.
+func (c *Chat) toolBudget() int {
+	switch {
+	case c.opts.MaxToolCalls == 0:
+		return DefaultMaxToolCalls
+	case c.opts.MaxToolCalls < 0:
+		return 0
+	default:
+		return c.opts.MaxToolCalls
 	}
 }
 
@@ -197,16 +238,18 @@ type turnRun struct {
 	tracker *turnTracker
 	yield   func(Event, error) bool
 
-	// dispatched records the calls this turn has run, keyed by agent and call id.
+	// dispatched records the calls this turn has run, keyed by call id.
 	//
 	// The wire delivers one call twice on the MCP path — [BlockStream] folds that
 	// away for a renderer, and this is the same fact on the executing side. Without
 	// it a deploy, a spend or a signature runs twice for one authorisation.
 	//
-	// Keyed by both, because each agent numbers its own calls and a sub-agent's items
-	// ride an ancestor's stream. Keyed by call alone, one agent's call_1 suppressed
-	// another's, and the suppressed call was never answered — which parks the very
-	// agent the guard exists to protect.
+	// By call id alone, because that is the identity the server itself uses: the
+	// output this package posts carries call_id and output, and nothing else, so a
+	// call id the server issues twice concurrently is one it could not route an
+	// answer to either. An earlier key added the item's agent_name, which is a
+	// field the server chooses — so one call could be run again under a second
+	// name, which is the opposite of what this guard is for.
 	//
 	// A call that failed cannot be retried under the same key. That is deliberate for
 	// a tool that moves money, and it means a re-delivery after a failed post is
@@ -217,6 +260,16 @@ type turnRun struct {
 	// report them.
 	responseID string
 	iteration  int
+
+	// unfinishable records that the turn cannot reach its end, so reading on would
+	// only wait for the caller's deadline. Set when the server refuses an answer
+	// this package owes it: the server stays parked on the call, its terminal never
+	// comes, and the cause is already reported.
+	unfinishable bool
+
+	// announced records the responses OnResponseStart has fired for, so the three
+	// events that can announce one response produce one start.
+	announced map[string]bool
 
 	// stopped records a caller that stopped reading. Nothing may yield after that:
 	// calling a spent yield panics the caller's range loop.
@@ -258,9 +311,16 @@ func (r *turnRun) track(event Event) {
 		r.tracker.observeStatus(e)
 	case SessionSupersededEvent:
 		r.tracker.observeSuperseded(e)
+	// All three announce a response. The server drops the created half of the
+	// created/in_progress pair at its publish chokepoint, so a subscription sees
+	// in_progress alone — keying on created meant this never fired on a live turn
+	// and every response id it reported was empty. Upstream reads the same three.
 	case ResponseCreatedEvent:
-		r.responseID = e.Response.ID
-		r.iteration = 0
+		r.beginResponse(e.Response.ID)
+	case InProgressEvent:
+		r.beginResponse(e.Response.ID)
+	case QueuedEvent:
+		r.beginResponse(e.Response.ID)
 	case ResponseCompletedEvent:
 		r.tracker.observeResponseTerminal(e.Response.ID, nil)
 	case ResponseCancelledEvent:
@@ -281,7 +341,11 @@ func (r *turnRun) act(ctx context.Context, event Event) {
 	hooks := r.chat.opts.Hooks
 	switch e := event.(type) {
 	case ResponseCreatedEvent:
-		fire(r.report, "OnResponseStart", hooks.OnResponseStart, ResponseStartCtx{ResponseID: e.Response.ID, Model: e.Response.Model})
+		r.announceResponse(hooks, e.Response)
+	case InProgressEvent:
+		r.announceResponse(hooks, e.Response)
+	case QueuedEvent:
+		r.announceResponse(hooks, e.Response)
 
 	case ReasoningStartedEvent:
 		fire(r.report, "OnReasoningStart", hooks.OnReasoningStart, ReasoningStartCtx{ResponseID: r.responseID})
@@ -318,6 +382,35 @@ func (r *turnRun) act(ctx context.Context, event Event) {
 	}
 }
 
+// beginResponse records the response a turn's later events belong to.
+//
+// Idempotent, because all three announcing events can arrive for one response.
+// Taking the id from whichever comes first is what makes an id available at all.
+func (r *turnRun) beginResponse(id string) {
+	if id == "" || r.responseID == id {
+		return
+	}
+	r.responseID = id
+	r.iteration = 0
+}
+
+// announceResponse fires OnResponseStart once for a response.
+//
+// Once, not once per announcing event: a server may send created, queued and
+// in_progress for the same response, and a caller counting starts would count
+// three.
+func (r *turnRun) announceResponse(hooks StreamHooks, response ResponseObject) {
+	if response.ID == "" || r.announced[response.ID] {
+		return
+	}
+	if r.announced == nil {
+		r.announced = map[string]bool{}
+	}
+	r.announced[response.ID] = true
+	fire(r.report, "OnResponseStart", hooks.OnResponseStart,
+		ResponseStartCtx{ResponseID: response.ID, Model: response.Model})
+}
+
 func (r *turnRun) endResponse(response ResponseObject) {
 	fire(r.report, "OnResponseEnd", r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
 	// Counts passes for the payloads that report one. A turn reaches one terminal
@@ -349,32 +442,39 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 		executedBy = "client"
 	}
 	info := ToolCallInfo{
-		Name:       name,
-		Arguments:  itemArguments(e.Item),
-		CallID:     callID,
-		AgentName:  itemString(e.Item, "agent_name"),
-		ResponseID: r.responseID,
-		Iteration:  r.iteration,
+		Name:      name,
+		Arguments: itemArguments(e.Item),
+		CallID:    callID,
+		ItemID:    itemString(e.Item, "id"),
 	}
+	// Read for the observer, not carried on info: see [ToolCallInfo].
+	agentName := itemString(e.Item, "agent_name")
 	fire(r.report, "OnToolCallStart", r.chat.opts.Hooks.OnToolCallStart, ToolCallStartCtx{
-		Name: info.Name, CallID: info.CallID, AgentName: info.AgentName,
+		Name: info.Name, CallID: info.CallID, AgentName: agentName,
 		Arguments: info.Arguments, ExecutedBy: executedBy,
 	})
 	if !awaitingClient {
 		return
 	}
-	// Keyed by agent as well as call: each agent numbers its own calls, and a
-	// sub-agent's items ride an ancestor's stream, so one call id names two calls.
-	key := info.AgentName + "\x00" + callID
-	if r.dispatched[key] {
+	if r.dispatched[callID] {
 		// The same call, delivered twice. Answered once — and said so, because a
 		// silent drop is indistinguishable from a call this client never saw.
-		r.emit(nil, fmt.Errorf("%w: %s already ran for agent %q",
-			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes),
-			sanitizeForError(info.AgentName, maxAgentNameRunes)))
+		r.emit(nil, fmt.Errorf("%w: %s already ran",
+			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes)))
 		return
 	}
-	r.dispatched[key] = true
+	// A budget, because the call id is the server's to choose: without one, a
+	// compromised relay turns a single prompt into unbounded invocations of the
+	// caller's most privileged code, and only the caller's deadline stops it.
+	if limit := r.chat.toolBudget(); limit > 0 && len(r.dispatched) >= limit {
+		r.emit(nil, fmt.Errorf("%w: %d in one turn; raise ChatOptions.MaxToolCalls "+
+			"if this turn is legitimate", ErrToolCallBudget, limit))
+		// The server is parked on a call this package will not answer, so its
+		// terminal never arrives.
+		r.unfinishable = true
+		return
+	}
+	r.dispatched[callID] = true
 	r.runTool(ctx, info)
 }
 
@@ -389,12 +489,26 @@ func (r *turnRun) runTool(ctx context.Context, info ToolCallInfo) {
 		Name: info.Name, CallID: info.CallID, Output: output, Err: runErr,
 	})
 
-	if _, err := r.chat.client.Sessions().PostEvent(ctx, r.chat.sessionID, SessionEventInput{
+	accepted, err := r.chat.client.Sessions().PostEvent(ctx, r.chat.sessionID, SessionEventInput{
 		Type: InputTypeFunctionCallOutput,
 		Data: map[string]any{"call_id": info.CallID, "output": output},
-	}); err != nil {
+	})
+	if err != nil {
 		r.emit(nil, fmt.Errorf("post output for tool %q: %w",
 			sanitizeForError(info.Name, maxToolNameRunes), err))
+		return
+	}
+	// The tool already ran. A refused output means the side effect happened and
+	// the server never learned the answer, which is worth saying rather than
+	// leaving the session parked on a call it thinks is outstanding.
+	if accepted.Denied {
+		r.emit(nil, fmt.Errorf("post output for tool %q: %w: %s",
+			sanitizeForError(info.Name, maxToolNameRunes), ErrInputDenied,
+			sanitizeForError(accepted.Reason, maxErrorFieldRunes)))
+		// The server is parked on a call it will not accept an answer for, so its
+		// terminal never arrives. Ending here reports the refusal as the cause
+		// rather than the caller's deadline.
+		r.unfinishable = true
 		return
 	}
 	if runErr != nil {
@@ -446,7 +560,7 @@ func (r *turnRun) decideElicitation(e ElicitationRequestEvent) (accept bool) {
 				sanitizeForError(fmt.Sprint(recovered), maxErrorFieldRunes)))
 		}
 	}()
-	return hook(elicitationCtxOf(r.chat.sessionID, e))
+	return hook(elicitationCtxOf(r.chat.sessionID, r.responseID, e))
 }
 
 // elicitationTarget reports the session whose resolve route owns a request.
@@ -462,11 +576,19 @@ func elicitationTarget(reading string, e ElicitationRequestEvent) string {
 	return reading
 }
 
-func elicitationCtxOf(fallbackSession string, e ElicitationRequestEvent) ElicitationCtx {
+func elicitationCtxOf(fallbackSession, responseID string, e ElicitationRequestEvent) ElicitationCtx {
 	ctx := ElicitationCtx{
-		SessionID:     elicitationTarget(fallbackSession, e),
-		ElicitationID: e.ElicitationID,
-		Message:       e.Params.Message,
+		SessionID:       elicitationTarget(fallbackSession, e),
+		ElicitationID:   e.ElicitationID,
+		Message:         e.Params.Message,
+		RequestedSchema: e.Params.RequestedSchema,
+		ResponseID:      responseID,
+	}
+	if e.Params.Mode != nil {
+		ctx.Mode = *e.Params.Mode
+	}
+	if e.Params.URL != nil {
+		ctx.URL = *e.Params.URL
 	}
 	if e.Params.Phase != nil {
 		ctx.Phase = *e.Params.Phase

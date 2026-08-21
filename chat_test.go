@@ -588,16 +588,25 @@ func TestAPanickingApprovalHookDeclines(t *testing.T) {
 	}
 }
 
-// TestAToolCallCarriesItsResponseAndIteration pins two fields a tool reads to scope
-// an idempotency guard. Documented and always zero is worse than absent.
-func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
+// TestAToolCallCarriesWhatItsItemCarries pins that ToolCallInfo reports the item
+// and nothing synthesised.
+//
+// This test used to assert a ResponseID, and passed only because its fixture sent
+// response.created — an event event.go says a live turn never carries, because the
+// server drops the created half of the created/in_progress pair at the publish
+// chokepoint. So the field it checked was empty in production and the suite could
+// not see it.
+//
+// The fixture now sends in_progress, which is what a subscription actually gets.
+func TestAToolCallCarriesWhatItsItemCarries(t *testing.T) {
 	t.Parallel()
 
 	_, client := newChatServer(t, nil, []string{
 		echoFrame,
-		`{"type":"response.created","response":{"id":"r7","model":"coder","status":"in_progress"}}`,
-		`{"type":"response.output_item.done","item":{"type":"function_call",` +
-			`"status":"action_required","call_id":"c1","name":"Echo","arguments":"{}"}}`,
+		`{"type":"response.in_progress","response":{"id":"r7","model":"coder","status":"in_progress"}}`,
+		`{"type":"response.output_item.done","item":{"type":"function_call","id":"item_9",` +
+			`"status":"action_required","call_id":"c1","name":"Echo","arguments":"{}",` +
+			`"agent_name":"coder.researcher"}}`,
 		`{"type":"response.completed","response":{"id":"r7","status":"completed"}}`,
 	})
 	tools := NewToolRegistry()
@@ -608,16 +617,28 @@ func TestAToolCallCarriesItsResponseAndIteration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+
+	var observed string
 	chat, _ := client.Chat("conv_1", ChatOptions{
-		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Tools: tools,
+		Hooks: StreamHooks{OnToolCallStart: func(c ToolCallStartCtx) { observed = c.AgentName }},
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for range chat.Send(ctx, "hi") {
 	}
 
-	if seen.ResponseID != "r7" {
-		t.Errorf("ResponseID = %q, want r7", seen.ResponseID)
+	if seen.CallID != "c1" {
+		t.Errorf("CallID = %q, want c1", seen.CallID)
+	}
+	if seen.ItemID != "item_9" {
+		t.Errorf("ItemID = %q, want item_9", seen.ItemID)
+	}
+	// The observer gets the agent name; the tool does not need it to answer, and
+	// it is a field the server chooses.
+	if observed != "coder.researcher" {
+		t.Errorf("OnToolCallStart saw agent %q, want coder.researcher", observed)
 	}
 }
 
@@ -695,14 +716,20 @@ func TestThePromptIsPostedOnAnyFirstFrame(t *testing.T) {
 	}
 }
 
-// TestACollidingCallIDAcrossAgentsRunsBoth pins that the dispatch guard is scoped to
-// the agent as well as the call.
+// TestOneCallIDRunsOnceWhateverAgentNameItCarries pins that the dispatch guard is
+// scoped to the call, and to nothing the server also chooses.
 //
-// Each agent numbers its own calls, and a sub-agent's items ride an ancestor's
-// stream, so one call id names two calls. Keyed by call alone, one agent's call
-// suppressed another's — and the suppressed one was never answered, parking the very
-// agent the guard exists to protect.
-func TestACollidingCallIDAcrossAgentsRunsBoth(t *testing.T) {
+// This test previously asserted the opposite, on the reasoning that each agent
+// numbers its own calls so one id could name two. The server's own contract says
+// otherwise: the output this package posts carries call_id and output and nothing
+// else, so a call id issued twice concurrently is one the server could not route
+// an answer to either. Upstream's client posts the same two fields and guards
+// nothing at all.
+//
+// Keying on the item's agent_name made the guard defeatable by the party it
+// defends against — the same call, replayed under a second name, ran a second
+// time. A deploy, a spend or a signature is exactly what that costs.
+func TestOneCallIDRunsOnceWhateverAgentNameItCarries(t *testing.T) {
 	t.Parallel()
 
 	call := func(agent string) string {
@@ -714,35 +741,43 @@ func TestACollidingCallIDAcrossAgentsRunsBoth(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
 	})
 
-	tools := NewToolRegistry()
 	var mu sync.Mutex
-	var agents []string
+	var ran []string
+	tools := &ToolRegistry{}
 	if err := tools.Register("Echo", nil, func(_ context.Context, info ToolCallInfo) (string, error) {
 		mu.Lock()
-		defer mu.Unlock()
-		agents = append(agents, info.AgentName)
+		ran = append(ran, info.CallID)
+		mu.Unlock()
 		return "ok", nil
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	chat, _ := client.Chat("conv_1", ChatOptions{
-		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle}, Tools: tools,
+	chat, err := client.Chat("conv_1", ChatOptions{
+		Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Tools: tools,
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	for range chat.Send(ctx, "hi") {
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var duplicated error
+	for _, err := range chat.Send(t.Context(), "hi") {
+		if errors.Is(err, ErrToolCallDuplicated) {
+			duplicated = err
+		}
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(agents) != 2 {
-		t.Fatalf("ran for %v; two agents each asked for their own call_1", agents)
+	if len(ran) != 1 {
+		t.Errorf("the tool ran %d times for one call id (%v), want 1", len(ran), ran)
 	}
-	// Both answered: an unanswered call parks its agent until the deadline.
-	if got := server.postedTypes(); len(got) != 3 {
-		t.Errorf("posted %v, want the prompt and two outputs", got)
+	if duplicated == nil {
+		t.Error("the second delivery was dropped without saying so; a silent drop is " +
+			"indistinguishable from a call this client never saw")
 	}
+	_ = server
 }
 
 // TestATrueDuplicateRunsOnceAndSaysSo pins the other half: the same agent's same
