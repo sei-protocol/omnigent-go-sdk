@@ -4,8 +4,8 @@
 # Two steps, because one of them is not something an OpenAPI generator can do.
 # spec/preprocess.py stamps the Go type decisions the document cannot carry, and
 # oapi-codegen reads its output. Running oapi-codegen against spec/openapi.json
-# directly compiles, and is wrong in twelve currency fields and seventy-one
-# collections.
+# directly compiles, and is wrong in every currency field and every optional
+# collection. The per-transform counts this prints are the record of how many.
 #
 # The generated file is committed. This script is for refreshing it after the
 # spec moves, and CI runs it to prove the committed copy is what the spec

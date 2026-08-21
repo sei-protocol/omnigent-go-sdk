@@ -18,5 +18,6 @@ output-options:
   # Mandatory, not a preference. oapi-codegen does not read the OAS 3.2
   # itemSchema keyword, which is the only path from a route to
   # ServerStreamEvent. Pruning therefore finds the whole event union
-  # unreachable and drops all 53 variants without a word.
+  # unreachable and drops it without a word: the union schema and every
+  # variant under it.
   skip-prune: true

@@ -76,8 +76,8 @@
 // document itself, not here. See
 // docs/adr/0001-generate-wire-types-behind-a-facade.md.
 //
-// Eight tests hold the types to the description, across five dimensions: the
-// mapping is complete in both directions, every exported field names a property
+// Tests hold the types to the description: the mapping is complete in both
+// directions, every exported field names a property
 // the description declares, its Go type and optionality match, a container's
 // declared value or element type matches, every declared enum value has a
 // constant, and the decoder's variant set equals the discriminator mapping.

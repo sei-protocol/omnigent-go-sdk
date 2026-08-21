@@ -17,11 +17,11 @@ Read `doc.go` before changing the public surface.
 `spec/openapi.json` is a pinned snapshot of the server's OpenAPI document.
 
 - Declare only fields the document declares, with the type and optionality it
-  declares. Nine conformance tests check every exported type the decoder
-  reaches, across five dimensions. They do not check a field's presence: omitting
-  a property the document declares passes, deliberately. They do check an event's
-  presence: `TestEveryUnionMemberIsRegistered` fails when the document publishes
-  a variant the decoder would return as `UnknownEvent`.
+  declares. The conformance tests check every exported type the decoder reaches.
+  They do not check a field's presence: omitting a property the document declares
+  passes, deliberately. They do check an event's presence:
+  `TestEveryUnionMemberIsRegistered` fails when the document publishes a variant
+  the decoder would return as `UnknownEvent`.
 - Add an event variant by declaring `type X api.Y` in `event.go` and adding its
   `eventRegistry` entry. The type-to-schema mapping derives itself from that
   declaration, so there is no table to edit.
@@ -43,9 +43,14 @@ and names what is missing.
 
 Generation runs over `spec/preprocess.py`'s output, not over `spec/openapi.json`.
 That stage stamps the Go type decisions no OpenAPI document can carry. Generating
-from the raw document compiles, and is wrong in twelve currency fields and
-seventy-one collections. Add a transform there rather than editing the generated
-file or the vendored spec.
+from the raw document compiles, and is wrong in every currency field and every
+optional collection. Add a transform there rather than editing the generated file
+or the vendored spec.
+
+`bin/generate.sh` prints what each transform matched, and refuses to run when any
+of them matches nothing. Read those counts on a spec refresh. A transform that
+stops matching does not break the build. It returns a type to being wrong the way
+it was wrong before the transform existed.
 
 The public types are one-line declarations over that package. Use `type X = api.X`
 where the type carries no methods, and `type X api.X` where it does, because Go
