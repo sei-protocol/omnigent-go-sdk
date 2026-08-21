@@ -113,7 +113,11 @@ func OnlyAgent(agent string) Transform {
 					}
 					continue
 				}
-				if agent != "" && block.Context().Agent != agent {
+				// A nil block with no error is not a shape the fold produces, but
+				// Transform is exported and takes any sequence. The other four
+				// transforms pass it through rather than reading it, so this one does
+				// too: a filter is not the place to decide a caller's input is wrong.
+				if agent != "" && block != nil && block.Context().Agent != agent {
 					continue
 				}
 				if !yield(block, nil) {
@@ -154,7 +158,11 @@ func SkipIntermediateEnds() Transform {
 					held = block
 					continue
 				}
-				held = nil
+				// The held end is not discarded here. A block after an end does not
+				// mean that end was intermediate — it means the sequence has not
+				// stopped yet, and the fold's own trailing text flush is exactly such
+				// a block. Clearing it deleted every end from a dropped stream, which
+				// is the one case a caller waiting for an end cannot recover from.
 				if !yield(block, nil) {
 					return
 				}

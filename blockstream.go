@@ -128,10 +128,16 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 		}
 		for event, err := range events {
 			if err != nil {
-				if !state.emit(nil, err) {
-					return
-				}
-				continue
+				// Flushed before the error, not after. [Client.Stream] documents an
+				// error step as the last one, so a caller writing the ordinary
+				// `if err != nil { return }` stops here — and the accumulated answer
+				// has to have arrived already or it is lost. Emitting it afterwards
+				// put blocks behind a terminal error and made the salvage below
+				// unreachable for the pattern that documentation recommends.
+				state.closeText()
+				state.closeReasoning()
+				state.emit(nil, err)
+				return
 			}
 			state.fold(event)
 			if state.stopped {
