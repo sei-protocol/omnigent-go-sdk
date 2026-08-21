@@ -153,6 +153,14 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 		if err != nil {
 			return fmt.Errorf("send prompt: %w", err)
 		}
+		// A refusal arrives as a 200 the caller has to read. Reported here rather
+		// than ignored, because a denied prompt starts no turn: the anchor stays
+		// empty, no rule can ever cross the boundary, and the read would otherwise
+		// run to the caller's deadline and blame the stream.
+		if accepted.Denied {
+			return fmt.Errorf("send prompt: %w: %s", ErrInputDenied,
+				sanitizeForError(accepted.Reason, maxErrorFieldRunes))
+		}
 		run.tracker.anchorOn(anchorOf(accepted))
 		return nil
 	}
@@ -170,7 +178,7 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 		// in that order. Before the end check, because the server parks the turn on a
 		// tool call and an approval, and its terminal only follows once they answer.
 		run.act(ctx, event)
-		if run.stopped {
+		if run.stopped || run.unfinishable {
 			return
 		}
 		if run.tracker.ended() {
@@ -182,7 +190,7 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 	}
 	// Reported rather than treated as an end: a caller reading the sequence as
 	// complete would take a partial answer for the whole one.
-	if !run.tracker.ended() && !run.stopped {
+	if !run.tracker.ended() && !run.stopped && !run.unfinishable {
 		run.emit(nil, fmt.Errorf("turn on session %s: %w", c.sessionID, ErrTurnIncomplete))
 	}
 }
@@ -217,6 +225,12 @@ type turnRun struct {
 	// report them.
 	responseID string
 	iteration  int
+
+	// unfinishable records that the turn cannot reach its end, so reading on would
+	// only wait for the caller's deadline. Set when the server refuses an answer
+	// this package owes it: the server stays parked on the call, its terminal never
+	// comes, and the cause is already reported.
+	unfinishable bool
 
 	// stopped records a caller that stopped reading. Nothing may yield after that:
 	// calling a spent yield panics the caller's range loop.
@@ -389,12 +403,26 @@ func (r *turnRun) runTool(ctx context.Context, info ToolCallInfo) {
 		Name: info.Name, CallID: info.CallID, Output: output, Err: runErr,
 	})
 
-	if _, err := r.chat.client.Sessions().PostEvent(ctx, r.chat.sessionID, SessionEventInput{
+	accepted, err := r.chat.client.Sessions().PostEvent(ctx, r.chat.sessionID, SessionEventInput{
 		Type: InputTypeFunctionCallOutput,
 		Data: map[string]any{"call_id": info.CallID, "output": output},
-	}); err != nil {
+	})
+	if err != nil {
 		r.emit(nil, fmt.Errorf("post output for tool %q: %w",
 			sanitizeForError(info.Name, maxToolNameRunes), err))
+		return
+	}
+	// The tool already ran. A refused output means the side effect happened and
+	// the server never learned the answer, which is worth saying rather than
+	// leaving the session parked on a call it thinks is outstanding.
+	if accepted.Denied {
+		r.emit(nil, fmt.Errorf("post output for tool %q: %w: %s",
+			sanitizeForError(info.Name, maxToolNameRunes), ErrInputDenied,
+			sanitizeForError(accepted.Reason, maxErrorFieldRunes)))
+		// The server is parked on a call it will not accept an answer for, so its
+		// terminal never arrives. Ending here reports the refusal as the cause
+		// rather than the caller's deadline.
+		r.unfinishable = true
 		return
 	}
 	if runErr != nil {

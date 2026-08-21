@@ -125,6 +125,14 @@ var (
 	// caller counting tool use would be quietly wrong.
 	ErrToolCallDuplicated = errors.New("the call was already run")
 
+	// ErrInputDenied means the server refused an input synchronously, saying why.
+	//
+	// Distinct from a transport failure: the send reached the server and the
+	// server answered. A denied prompt is the case worth naming, because the
+	// turn it would have started never begins, so nothing on the stream can end
+	// it and the read otherwise runs to the caller's deadline.
+	ErrInputDenied = errors.New("the server denied the input")
+
 	// ErrHookPanicked reports that a caller-supplied hook panicked.
 	//
 	// The turn continues, and an approval hook that panics declines. Reported
