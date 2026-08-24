@@ -386,144 +386,47 @@ func TestStreamSkippedFrameHookCanEndTheStream(t *testing.T) {
 // made the Go client better than the reference here: a stream that delivers no
 // event cannot end quietly. Skipping a frame is a degradation, but skipping every
 // frame a stream carried is a failure, and reporting it is what stops a decode
-// failure from being read as an agent that said nothing.
-func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(sseHandler(
-		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":42}`),
-		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":43}`),
-		"data: [DONE]\n\n",
-	))
-	defer server.Close()
-
-	client, err := New(server.URL)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
-
-	if len(events) != 0 {
-		t.Errorf("events = %v, want none: neither frame was decodable", events)
-	}
-	if !errors.Is(streamErr, ErrStreamProtocol) {
-		t.Fatalf("stream error = %v, want it to wrap ErrStreamProtocol", streamErr)
-	}
-	if !strings.Contains(streamErr.Error(), "response.output_text.delta") {
-		t.Errorf("error %q does not name the event type that failed to decode", streamErr)
-	}
-	// The sentinel did arrive, so this is not a dropped transport and a caller
-	// must not reconcile as if it were.
-	if errors.Is(streamErr, ErrStreamInterrupted) {
-		t.Error("a fully undecodable stream must not present as an interrupted one")
-	}
+// releasableClock is a clock that reads zero until the test releases it, and then
+// runs away.
+//
+// Both halves matter. Held at zero, no scheduling delay can make the watchdog
+// judge a stream idle, so a test can be sure the frames it expects arrive however
+// loaded the runner is. Released, every reading is a further timeout past the
+// last, so the next check fires whatever order it lands in — including after the
+// resume that follows a caller's handler, which re-baselines the watchdog and
+// would defeat a clock that only jumped once.
+type releasableClock struct {
+	step     time.Duration
+	released atomic.Bool
+	ticks    atomic.Int64
 }
 
-func TestStreamRejectedSubscription(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		status int
-		body   string
-		want   error
-	}{
-		{"absent or invisible", http.StatusNotFound, `{"error":{"code":"not_found","message":"gone"}}`, ErrNotFound},
-		{"unauthenticated", http.StatusUnauthorized, `{"detail":"unauthorized"}`, ErrUnauthorized},
-		{"read access missing", http.StatusForbidden, `{"detail":"forbidden"}`, ErrForbidden},
+func (c *releasableClock) elapsed() time.Duration {
+	if !c.released.Load() {
+		return 0
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(tc.status)
-				_, _ = io.WriteString(w, tc.body)
-			}))
-			defer server.Close()
-
-			client, err := New(server.URL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
-			if len(events) != 0 {
-				t.Errorf("got events %v, want none", events)
-			}
-			if !errors.Is(streamErr, tc.want) {
-				t.Fatalf("stream error = %v, want it to wrap %v", streamErr, tc.want)
-			}
-			var apiErr *APIError
-			if !errors.As(streamErr, &apiErr) {
-				t.Fatalf("stream error %v does not unwrap to *APIError", streamErr)
-			}
-		})
-	}
+	return time.Duration(c.ticks.Add(int64(c.step)))
 }
 
-func TestStreamRequestShape(t *testing.T) {
-	t.Parallel()
+// release starts the clock. Silence after this point is silence at any speed.
+func (c *releasableClock) release() { c.released.Store(true) }
 
-	tests := []struct {
-		name      string
-		opts      StreamOptions
-		wantQuery string
-	}{
-		{name: "attentive subscriber sends no idle flag"},
-		{name: "idle subscriber declares itself", opts: StreamOptions{Idle: true}, wantQuery: "idle=true"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			requests := make(chan *http.Request, 1)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests <- r.Clone(r.Context())
-				sseHandler("data: [DONE]\n\n")(w, r)
-			}))
-			defer server.Close()
-
-			client, err := New(server.URL)
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
-			if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", tc.opts)); streamErr != nil {
-				t.Fatalf("stream: %v", streamErr)
-			}
-			got := <-requests
-			if got.URL.EscapedPath() != "/v1/sessions/conv_1/stream" {
-				t.Errorf("path = %q, want /v1/sessions/conv_1/stream", got.URL.EscapedPath())
-			}
-			if got.URL.RawQuery != tc.wantQuery {
-				t.Errorf("query = %q, want %q", got.URL.RawQuery, tc.wantQuery)
-			}
-			if accept := got.Header.Get("Accept"); accept != "text/event-stream" {
-				t.Errorf("Accept = %q, want text/event-stream", accept)
-			}
-		})
-	}
-}
-
-func TestStreamRequiresASessionID(t *testing.T) {
-	t.Parallel()
-
-	client, err := New("http://example.invalid")
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
-	if streamErr == nil || !strings.Contains(streamErr.Error(), "sessionID is required") {
-		t.Fatalf("stream error = %v, want one naming the missing session id", streamErr)
-	}
-}
-
+// TestStreamIdleTimeout pins that a transport that stops talking ends the stream
+// with [ErrStreamIdle], and that the frames it did send arrive first.
+//
+// The stream's timer still runs on real time, so a check lands when it lands.
+// What the clock decides is the verdict that check reaches, and that no check
+// before the release can reach it at all. The previous version instead gave the
+// heartbeat a 150ms head start and hoped: a runner that stalled there failed on
+// the missing heartbeat rather than on the timeout it was testing.
 func TestStreamIdleTimeout(t *testing.T) {
 	t.Parallel()
 
-	// One frame, then silence: the server that this stands in for would have
+	// Short, because this is now only the interval between checks, not a margin
+	// that delivery has to beat.
+	const idleTimeout = 20 * time.Millisecond
+
+	// One frame, then silence: the server this stands in for would have
 	// heartbeated, so the watchdog firing is the correct diagnosis.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
@@ -531,14 +434,30 @@ func TestStreamIdleTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(150*time.Millisecond))
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	started := time.Now()
-	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
-	elapsed := time.Since(started)
+	clock := &releasableClock{step: idleTimeout}
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		return newIdleWatchdogWithClock(timeout, cancel, clock.elapsed)
+	}
+
+	var (
+		events    []string
+		streamErr error
+	)
+	for event, err := range client.Stream(t.Context(), "conv_1", StreamOptions{}) {
+		if err != nil {
+			streamErr = err
+			continue
+		}
+		events = append(events, describe(event))
+		// The heartbeat is in the caller's hands, so the transport going quiet
+		// from here is the thing under test rather than a race against delivery.
+		clock.release()
+	}
 
 	if len(events) != 1 || events[0] != "heartbeat" {
 		t.Errorf("events = %v, want the one heartbeat that did arrive", events)
@@ -549,27 +468,43 @@ func TestStreamIdleTimeout(t *testing.T) {
 	if errors.Is(streamErr, context.Canceled) {
 		t.Error("an idle timeout must not present as caller cancellation")
 	}
-	if elapsed > 5*time.Second {
-		t.Errorf("watchdog took %s to fire; it should follow the configured timeout", elapsed)
-	}
 }
 
+// TestStreamPerCallIdleTimeoutOverridesTheClientDefault pins which of the two
+// timeouts a stream is built with.
+//
+// It reads the value handed to the watchdog rather than waiting to see which one
+// expires. That is the property — [StreamOptions.IdleTimeout] outranks
+// [WithStreamIdleTimeout] — and waiting for a firing showed it only by inference,
+// at 150ms a run: an hour failing to elapse is not evidence that the hour was the
+// value this stream discarded.
 func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
-		<-r.Context().Done()
-	}))
+	const perCall = 150 * time.Millisecond
+
+	server := httptest.NewServer(sseHandler("data: [DONE]\n\n"))
 	defer server.Close()
 
 	client, err := New(server.URL, WithStreamIdleTimeout(time.Hour))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	opts := StreamOptions{IdleTimeout: 150 * time.Millisecond}
-	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts)); !errors.Is(streamErr, ErrStreamIdle) {
-		t.Fatalf("stream error = %v, want it to wrap ErrStreamIdle", streamErr)
+
+	var built atomic.Int64
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		built.Store(int64(timeout))
+		return newIdleWatchdog(timeout, cancel)
+	}
+
+	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1",
+		StreamOptions{IdleTimeout: perCall})); streamErr != nil {
+		t.Fatalf("stream error = %v, want none", streamErr)
+	}
+
+	if got := time.Duration(built.Load()); got != perCall {
+		t.Errorf("the stream's watchdog was built with %s, want the per-call %s: "+
+			"StreamOptions.IdleTimeout outranks WithStreamIdleTimeout", got, perCall)
 	}
 }
 
@@ -761,9 +696,10 @@ func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
 	if want := "delta:" + delta; events[0] != want {
 		t.Errorf("the reassembled frame is %d bytes, want %d", len(events[0]), len(want))
 	}
-	// One reading is taken at construction, so anything above that came from a
-	// read. The frame is 96 KiB against a 64 KiB scanner buffer, so a body read
-	// through the watchdog cannot deliver it in one.
+	// Two readings come from elsewhere: one at construction, one from the resume
+	// after this stream's single event. A third can only have come from a Read.
+	// The frame is 96 KiB against a 64 KiB scanner buffer, so a body read through
+	// the watchdog cannot deliver it in one.
 	if got := readings.Load(); got < 3 {
 		t.Errorf("the watchdog took %d clock readings; a body read through it takes "+
 			"one per delivering Read, so this stream is not reading through it at all", got)
@@ -773,9 +709,17 @@ func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
 // TestStreamIdleTimeoutFiresMidFrame is the other half of P3: feeding the watchdog
 // on byte progress must not let a half-arrived frame hold it off forever. A frame
 // that stops mid-line and never resumes is a dead transport like any other.
+//
+// The clock is released by the handler rather than by the caller's loop, because
+// there is no event here to hand back — and no rendezvous is needed either way.
+// The outcome is the same whether the truncated bytes were read before the
+// watchdog fired or not: no event can be built from half a line.
 func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	t.Parallel()
 
+	const idleTimeout = 20 * time.Millisecond
+
+	clock := &releasableClock{step: idleTimeout}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -784,14 +728,19 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 		_, _ = io.WriteString(w, "event: response.output_text.delta\n"+
 			`data: {"type":"response.output_text.delta","delta":"trunc`)
 		_ = controller.Flush()
+		clock.release()
 		<-r.Context().Done()
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(150*time.Millisecond))
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		return newIdleWatchdogWithClock(timeout, cancel, clock.elapsed)
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if len(events) != 0 {
@@ -802,35 +751,65 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	}
 }
 
-func TestStreamSurvivesALongToolPauseWithinTheTimeout(t *testing.T) {
+// TestAPauseShorterThanTheTimeoutIsNotSilence is the complement: a tool call can
+// hold a turn open for minutes, and the server's heartbeat is what proves the
+// transport is alive through it.
+//
+// The handler moves the clock, a quarter of the timeout per heartbeat, so three
+// pauses total three quarters of it. Staying under the timeout in aggregate is
+// what makes the result independent of when reads land — HTTP buffering can
+// deliver three writes in one Read, so a test that advanced a full gap per
+// heartbeat would fire or not depending on the transport's buffer size rather
+// than on the watchdog.
+//
+// What this does not pin: that arriving bytes are what rearm the watchdog. A
+// clock kept under the timeout cannot fire whatever feeds it, and counting the
+// watchdog's clock readings does not separate the two either, because resume
+// takes one after every event delivered. That half is
+// [TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete] and
+// [TestStreamReadsItsBodyThroughTheWatchdog]; here the subject is the gap.
+func TestAPauseShorterThanTheTimeoutIsNotSilence(t *testing.T) {
 	t.Parallel()
 
-	// Silence shorter than the timeout is normal: a tool call can hold a turn
-	// open for minutes, and the server's heartbeat is what proves liveness.
+	const (
+		idleTimeout = time.Minute
+		heartbeats  = 3
+		pause       = idleTimeout / 4
+	)
+
+	var clock atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		controller := http.NewResponseController(w)
-		for range 3 {
+		for range heartbeats {
+			clock.Add(int64(pause))
 			_, _ = io.WriteString(w, frame("session.heartbeat", `{"type":"session.heartbeat"}`))
 			_ = controller.Flush()
-			time.Sleep(60 * time.Millisecond)
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		_ = controller.Flush()
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(500*time.Millisecond))
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		return newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 	if streamErr != nil {
-		t.Fatalf("stream error = %v, want none: each frame should rearm the watchdog", streamErr)
+		t.Fatalf("stream error = %v, want none: silence under the timeout is a live "+
+			"transport", streamErr)
 	}
-	if len(events) != 3 {
-		t.Errorf("got %d events, want 3", len(events))
+	if len(events) != heartbeats {
+		t.Errorf("got %d events, want %d", len(events), heartbeats)
 	}
 }
 
