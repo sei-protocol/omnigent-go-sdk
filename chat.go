@@ -276,17 +276,13 @@ type turnRun struct {
 	stopped bool
 }
 
+func (r *turnRun) report(err error) { r.emit(nil, err) }
+
 // emit passes one event to the caller and records a caller that stopped reading.
 //
 // Every yield in a turn goes through here. A side effect that ignored a false
 // return and yielded again would panic in the caller's loop, so no side effect
 // holds the raw yield.
-// report hands an error to the caller and discards whether they are still reading.
-//
-// For a hook's panic, which is a step's own failure rather than the sequence's: the
-// loop checks stopped straight after, so nothing yields twice.
-func (r *turnRun) report(err error) { r.emit(nil, err) }
-
 func (r *turnRun) emit(event Event, err error) bool {
 	if r.stopped {
 		return false

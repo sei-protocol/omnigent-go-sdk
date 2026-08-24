@@ -136,11 +136,7 @@ func newTurnTracker(opts TurnOptions, sessionID string) *turnTracker {
 // a sender hoping an omission reads as consent. Taken only on the failed branch,
 // where dropping it would lose a session-level fault a caller is waiting on, and
 // where ending the turn early is the safe direction anyway.
-//
-// A tracker with no session of its own also takes every edge. Only [Chat] builds
-// one, and it refuses an empty session id, so that clause is unreachable from the
-// public surface — it is here so a direct construction in a test cannot silently
-// filter everything out.
+
 func (t *turnTracker) describesThisSession(conversationID string) bool {
 	return conversationID == t.sessionID
 }
