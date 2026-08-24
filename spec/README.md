@@ -6,6 +6,25 @@ record: no route outside it is a route this module reaches by design.
 
 Apache-2.0, © Databricks, Inc. — see `NOTICE` at the repository root.
 
+## The written contract beside it
+
+`omnigent/server/API.md` in the upstream repository is the closest thing to a
+specification for the session stream. It documents the stream's live-tail-only
+rule, the reconnect contract, and the session lifecycle states, and it says of
+itself that `openapi.json` is the single source of truth and its own tables are
+"derived / illustrative".
+
+It does not cover everything this module depends on. Nothing public documents that
+`response.created` is dropped before the subscriber bus, and nothing public
+documents tool-call redelivery or how a `call_id` is scoped. For those, the
+citable source is a pinned permalink into upstream's code or its Python client —
+`blob/<sha>/path#Lx-Ly`, never `blob/main`, because main moves daily.
+
+Upstream states in `API.md` that this API answers to no external standard: "No
+external reference. Purpose-built for agent-native workflows." A third party has asked
+upstream to document the turn-scoped contract, in omnigent-ai/omnigent#2754, which
+is open.
+
 ## Where it comes from
 
 The document is `openapi.json` at the root of
