@@ -457,11 +457,8 @@ func (r *turnRun) observeItem(ctx context.Context, e OutputItemDoneEvent) {
 		// silent drop is indistinguishable from a call this client never saw.
 		r.emit(nil, fmt.Errorf("%w: %s already ran",
 			ErrToolCallDuplicated, sanitizeForError(callID, maxRequestIDRunes)))
-		// Nothing is posted for the second delivery, so whatever asked for it is
-		// parked on an answer that will not come. Ending here reports that as the
-		// cause. Posting the first call's output instead would unpark it with the
-		// wrong result, which is worse for a tool that moves anything.
-		r.unfinishable = true
+		// Reported, and the read continues. The first delivery answered this call,
+		// so a redelivery costs nothing and the turn is still healthy.
 		return
 	}
 	// A budget, because the call id is the server's to choose: without one, a
