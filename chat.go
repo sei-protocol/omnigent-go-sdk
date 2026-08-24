@@ -111,9 +111,10 @@ func (c *Chat) Prompt(text string) *Turn {
 // Ends when the turn ends, and the subscription closes with it.
 //
 // Two classes of error arrive here, and they are not read the same way. A transport
-// failure, a prompt that could not be posted, [ErrTurnFailed] or [ErrTurnSuperseded]
-// end the sequence. A tool that failed, an approval this package could not resolve,
-// a duplicated call and a hook that panicked are reported and the read continues —
+// failure, a prompt that could not be posted, [ErrTurnFailed], [ErrTurnSuperseded]
+// or [ErrToolCallBudget] end the sequence. A tool that failed, an approval this
+// package could not resolve, a duplicated call, an output the server refused
+// ([ErrInputDenied]) and a hook that panicked are reported and the read continues —
 // the turn is still running, and still parked on whatever comes next. Each of those
 // has its own sentinel, so a caller deciding whether to stop matches rather than
 // assuming.
@@ -164,6 +165,7 @@ func (c *Chat) drive(ctx context.Context, text string, yield func(Event, error) 
 		chat:       c,
 		tracker:    newTurnTracker(c.opts.Turn, c.sessionID),
 		dispatched: map[string]bool{},
+		announced:  map[string]bool{},
 		yield:      yield,
 	}
 
@@ -256,10 +258,8 @@ type turnRun struct {
 	// dropped rather than retried.
 	dispatched map[string]bool
 
-	// responseID and iteration say where in the turn we are, for the payloads that
-	// report them.
+	// responseID says which response a turn's later events belong to.
 	responseID string
-	iteration  int
 
 	// unfinishable records that the turn cannot reach its end, so reading on would
 	// only wait for the caller's deadline. Set when the server refuses an answer
@@ -387,7 +387,6 @@ func (r *turnRun) beginResponse(id string) {
 		return
 	}
 	r.responseID = id
-	r.iteration = 0
 }
 
 // announceResponse fires OnResponseStart once for a response.
@@ -399,19 +398,17 @@ func (r *turnRun) announceResponse(hooks StreamHooks, response ResponseObject) {
 	if response.ID == "" || r.announced[response.ID] {
 		return
 	}
-	if r.announced == nil {
-		r.announced = map[string]bool{}
-	}
 	r.announced[response.ID] = true
 	fire(r.report, "OnResponseStart", hooks.OnResponseStart,
 		ResponseStartCtx{ResponseID: response.ID, Model: response.Model})
 }
 
 func (r *turnRun) endResponse(response ResponseObject) {
+	// Announced first, so an end always has a start before it. A subscriber that
+	// attached mid-turn, or a stream carrying only the terminal snapshot, never saw
+	// an announcing event — upstream balances the lifecycle here for that reason.
+	r.announceResponse(r.chat.opts.Hooks, response)
 	fire(r.report, "OnResponseEnd", r.chat.opts.Hooks.OnResponseEnd, ResponseEndCtx{ResponseID: response.ID, Status: response.Status})
-	// Counts passes for the payloads that report one. A turn reaches one terminal
-	// response, so this advances only if that response did not end the turn.
-	r.iteration++
 }
 
 // observeItem reports a finished output item and runs the ones this client owns.
@@ -503,10 +500,10 @@ func (r *turnRun) runTool(ctx context.Context, info ToolCallInfo) {
 		r.emit(nil, fmt.Errorf("post output for tool %q: %w: %s",
 			sanitizeForError(info.Name, maxToolNameRunes), ErrInputDenied,
 			sanitizeForError(accepted.Reason, maxErrorFieldRunes)))
-		// The server is parked on a call it will not accept an answer for, so its
-		// terminal never arrives. Ending here reports the refusal as the cause
-		// rather than the caller's deadline.
-		r.unfinishable = true
+		// Reported, and the read continues. Nothing in the session API says a
+		// refused output parks the server, and the refusal is already ahead of any
+		// later error in the sequence, so ending here would only truncate a turn
+		// that may still finish.
 		return
 	}
 	if runErr != nil {
