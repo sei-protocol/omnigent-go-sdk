@@ -214,7 +214,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 			return
 		}
 
-		watchdog := newIdleWatchdog(idleTimeout, cancel)
+		watchdog := c.newWatchdog(idleTimeout, cancel)
 		defer watchdog.stop()
 
 		// Read through the watchdog, so what feeds it is bytes arriving rather

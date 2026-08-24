@@ -573,24 +573,148 @@ func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 	}
 }
 
-// TestStreamSurvivesALargeFrameArrivingSlowly is P3. The watchdog was fed once
-// per completed line, so the idle timeout bounded not only silence but the whole
-// transfer of one frame — and this server writes a frame as a single data: line,
-// the snapshot-on-connect one approaching maxFrameBytes. A throttled link
-// therefore reported ErrStreamIdle partway through a perfectly healthy frame. The
-// watchdog is now fed by bytes arriving, so a frame that keeps arriving keeps the
-// stream alive however long it takes.
+// TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete is P3, stated on
+// a clock the test drives.
 //
-// The frame here takes several times the idle timeout to arrive, with no gap
-// within it close to the timeout: a slow link, not a dead one.
-func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
+// The watchdog was fed once per completed line, so the idle timeout bounded not
+// only silence but the whole transfer of one frame — and this server writes a
+// frame as a single data: line, the snapshot-on-connect one approaching
+// maxFrameBytes. A throttled link therefore reported ErrStreamIdle partway
+// through a perfectly healthy frame. The watchdog is fed by bytes arriving
+// instead, so a frame that keeps arriving keeps the stream alive however long it
+// takes.
+//
+// Driven rather than raced. The property is "silence is measured from the last
+// bytes read", and a test that expressed it by sleeping between writes asserted
+// something about the runner's scheduler as much as about the watchdog: the
+// original slept 25ms against a 200ms timeout, an 8x margin a loaded CI runner
+// ate often enough to fail the job. Here the clock only moves when this test
+// moves it, so the same answer comes back every run.
+func TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete(t *testing.T) {
+	t.Parallel()
+
+	const timeout = time.Minute
+
+	// Far past the timeout with nothing read: the state a slow frame's transfer
+	// reaches, and the state the old watchdog cancelled in.
+	elapsed := timeout * 10
+
+	t.Run("bytes read inside the gap keep the stream alive", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var clock atomic.Int64
+		watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		defer watchdog.stop()
+
+		clock.Store(int64(elapsed))
+		reader := &watchdogReader{inner: strings.NewReader("more of the same frame"), watchdog: watchdog}
+		if _, err := reader.Read(make([]byte, 8)); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+
+		watchdog.check()
+
+		if watchdog.expired() {
+			t.Error("the watchdog reported silence although bytes had just arrived: " +
+				"a frame still being delivered is a slow link, not a dead one")
+		}
+		if ctx.Err() != nil {
+			t.Errorf("the watchdog cancelled a stream that was still receiving: %v", ctx.Err())
+		}
+	})
+
+	t.Run("the same gap with nothing read is silence", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var clock atomic.Int64
+		watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		defer watchdog.stop()
+
+		// Same clock, same timeout, no read. This is what makes the case above
+		// mean something: the read is the only difference between them.
+		clock.Store(int64(elapsed))
+		watchdog.check()
+
+		if !watchdog.expired() {
+			t.Error("the watchdog did not fire on a transport that delivered nothing")
+		}
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Errorf("ctx error = %v, want context.Canceled", ctx.Err())
+		}
+	})
+}
+
+// TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead pins both halves of the
+// bracket the read loop puts around every call into the caller's code.
+//
+// suspend has to stop the judging, and resume has to re-baseline. Resume's half
+// is easy to lose, because in most tests a read follows immediately and records
+// activity anyway — so the mutation survives everything except a check taken
+// between the resume and the next read, which is what this does.
+func TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead(t *testing.T) {
+	t.Parallel()
+
+	const timeout = time.Minute
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var clock atomic.Int64
+	watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+		return time.Duration(clock.Load())
+	})
+	defer watchdog.stop()
+
+	// The caller's handler runs long, and an expiry lands while it does.
+	watchdog.suspend()
+	clock.Store(int64(timeout * 10))
+	watchdog.check()
+	if watchdog.expired() {
+		t.Fatal("the watchdog judged a gap it was suspended for: a slow handler is " +
+			"not a silent transport")
+	}
+
+	// The handler returns, and the next expiry lands before any further bytes.
+	watchdog.resume()
+	watchdog.check()
+	if watchdog.expired() {
+		t.Error("the watchdog counted the suspended gap once it resumed: resume has " +
+			"to restart the clock, or the handler's time is charged to the transport")
+	}
+	if ctx.Err() != nil {
+		t.Errorf("the watchdog cancelled a live stream: %v", ctx.Err())
+	}
+}
+
+// TestStreamReadsItsBodyThroughTheWatchdog is the wiring half.
+//
+// [TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete] proves the
+// watchdog counts silence from the last bytes read. That only reaches a real
+// stream if [Client.Stream] reads the response body through a [watchdogReader],
+// which is the line a refactor drops silently: every other test still passes,
+// because a stream that is never quiet never needs the watchdog.
+//
+// So this counts the readings the watchdog takes. Reading through the watchdog
+// takes one per Read that delivered bytes, which for a frame written in chunks is
+// many; reading around it takes the one at construction and nothing else. The
+// clock never advances, so no scheduling delay can end this stream — the test
+// says nothing about timing, only about wiring.
+func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
 	t.Parallel()
 
 	const (
-		idleTimeout = 200 * time.Millisecond
-		chunks      = 24
-		chunkSize   = 4 << 10
-		chunkPause  = 25 * time.Millisecond
+		chunks    = 24
+		chunkSize = 4 << 10
 	)
 
 	delta := strings.Repeat("z", chunks*chunkSize)
@@ -603,7 +727,6 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 			`data: {"type":"response.output_text.delta","delta":"`)
 		_ = controller.Flush()
 		for chunk := range chunks {
-			time.Sleep(chunkPause)
 			_, _ = io.WriteString(w, delta[chunk*chunkSize:(chunk+1)*chunkSize])
 			_ = controller.Flush()
 		}
@@ -612,20 +735,38 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
+	client, err := New(server.URL, WithStreamIdleTimeout(time.Hour))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+
+	// A clock that never moves, so the watchdog cannot fire whatever the runner
+	// is doing, and every reading it takes is counted.
+	var readings atomic.Int64
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		return newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+			readings.Add(1)
+			return 0
+		})
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if streamErr != nil {
-		t.Fatalf("stream error = %v, want none: a frame still arriving is not a silent transport", streamErr)
+		t.Fatalf("stream error = %v, want none", streamErr)
 	}
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want the one frame that was sent", len(events))
 	}
 	if want := "delta:" + delta; events[0] != want {
 		t.Errorf("the reassembled frame is %d bytes, want %d", len(events[0]), len(want))
+	}
+	// One reading is taken at construction, so anything above that came from a
+	// read. The frame is 96 KiB against a 64 KiB scanner buffer, so a body read
+	// through the watchdog cannot deliver it in one.
+	if got := readings.Load(); got < 3 {
+		t.Errorf("the watchdog took %d clock readings; a body read through it takes "+
+			"one per delivering Read, so this stream is not reading through it at all", got)
 	}
 }
 
@@ -967,15 +1108,32 @@ func TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
 	}
 }
 
-// TestStreamSurvivesASlowHandlerWhileDataFlows is the behavioural statement of
-// the same bug. The caller's handler blocks for several times the idle timeout
-// while the server keeps streaming: the timeout bounds transport silence, so a
-// slow handler must not end the stream, and must certainly not end it with
-// ErrStreamIdle right after events were delivered.
-func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
+// TestASlowHandlerDoesNotCountAsASilentTransport is the behavioural statement of
+// the same bug, on a clock the test drives.
+//
+// The idle timeout bounds transport silence, so a caller's handler blocking for
+// several times the timeout must not end the stream, and must certainly not end
+// it with ErrStreamIdle right after events were delivered. [Client.Stream]
+// brackets every call into the caller's code with suspend and resume for that
+// reason.
+//
+// The handler moves the clock instead of sleeping. That is the whole window under
+// test — the time the read loop spends outside the read — so advancing it there
+// states the condition exactly, where the previous version slept 200ms against a
+// 50ms timeout three times over and spent 600ms of real time asking the scheduler
+// the same question.
+//
+// Calling check from inside the handler is what makes it falsifiable: suspended,
+// the watchdog must re-arm without judging the gap at all. Drop the suspend and
+// this cancels the stream on the first event.
+//
+// It does not pin resume's own re-baseline, because the whole response is already
+// buffered here, so the read after the handler records activity anyway. That half
+// is pinned in [TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead].
+func TestASlowHandlerDoesNotCountAsASilentTransport(t *testing.T) {
 	t.Parallel()
 
-	const idleTimeout = 50 * time.Millisecond
+	const idleTimeout = time.Minute
 
 	server := httptest.NewServer(sseHandler(
 		frame("session.heartbeat", `{"type":"session.heartbeat"}`),
@@ -991,6 +1149,17 @@ func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
 	}
 
 	var (
+		clock    atomic.Int64
+		watchdog *idleWatchdog
+	)
+	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+		watchdog = newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		return watchdog
+	}
+
+	var (
 		events    []string
 		streamErr error
 	)
@@ -1001,8 +1170,9 @@ func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
 		}
 		events = append(events, describe(event))
 		// A handler far slower than the idle timeout, with the whole response
-		// already buffered in the transport.
-		time.Sleep(4 * idleTimeout)
+		// already buffered in the transport, and an expiry landing while it runs.
+		clock.Add(int64(4 * idleTimeout))
+		watchdog.check()
 	}
 
 	if streamErr != nil {

@@ -82,6 +82,12 @@ type Client struct {
 	// ownsTransport records that [New] built the transport, so [Client.Close]
 	// drains only a pool this package created.
 	ownsTransport bool
+
+	// newWatchdog builds each stream's idle watchdog. It is a field so a test can
+	// supply a clock it drives, because "the transport went quiet" is otherwise
+	// only expressible by sleeping and hoping the runner keeps up. No exported
+	// option writes it; [New] always installs the monotonic one.
+	newWatchdog func(time.Duration, context.CancelFunc) *idleWatchdog
 }
 
 // config is the state an [Option] writes. It is unexported on purpose: an
@@ -201,7 +207,12 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 		// identity, not of any one call.
 		cfg.header.Set("Origin", cfg.origin)
 	}
-	client := &Client{baseURL: parsed, header: cfg.header, idleTimeout: cfg.idleTimeout}
+	client := &Client{
+		baseURL:     parsed,
+		header:      cfg.header,
+		idleTimeout: cfg.idleTimeout,
+		newWatchdog: newIdleWatchdog,
+	}
 	base := cfg.httpClient
 	client.ownsTransport = base == nil
 	if base == nil {
