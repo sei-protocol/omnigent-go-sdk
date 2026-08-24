@@ -41,12 +41,14 @@ import (
 //
 // Five things about the stream shape are easy to get wrong:
 //
-// [ResponseCreatedEvent] never arrives on a live turn. The harness emits
-// "response.created" and "response.in_progress" as an inseparable pair, and the
-// server drops the created half at the publish chokepoint that feeds every
-// subscriber — so a subscription sees the in_progress half alone and no created
-// at all. That asymmetry is the design, not a dropped frame; take in_progress,
-// never created, as an in-process turn's opening event.
+// [ResponseCreatedEvent] never arrives on a live turn. The harness emits it paired
+// with "response.in_progress", and the server drops the created half before the
+// bus every subscriber reads. Take in_progress as an in-process turn's opening
+// event.
+//
+// The generated description on InProgressEvent says the opposite — "always follows
+// response.created". It describes the per-response harness stream, where the pair
+// is emitted; this package reads the session stream, downstream of the drop.
 //
 // Every stream opens with a fixed prologue, on every connect. First a
 // [SessionHeartbeatEvent], which is the subscription acknowledgement — but note

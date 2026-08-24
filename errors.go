@@ -221,10 +221,14 @@ var (
 //
 // Replaces every C0 and C1 control with a space, collapses runs, and caps the
 // result. Invalid UTF-8 becomes the replacement rune rather than raw bytes.
+//
+// The cap counts runes, like [truncateRunes], so the limit means the same thing
+// for a message in any script.
 func sanitizeForError(s string, max int) string {
 	var b strings.Builder
 	b.Grow(min(len(s), max))
 	space := false
+	written := 0
 	for _, r := range s {
 		switch {
 		case r == utf8.RuneError:
@@ -232,17 +236,19 @@ func sanitizeForError(s string, max int) string {
 		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
 			// One space for any run of controls, so a forged newline cannot start
 			// a line and a stripped run cannot join two words.
-			if !space && b.Len() > 0 {
+			if !space && written > 0 {
 				b.WriteByte(' ')
+				written++
 				space = true
 			}
 			continue
 		}
 		space = false
-		if b.Len() >= max {
+		if written >= max {
 			return strings.TrimSpace(b.String()) + "..."
 		}
 		b.WriteRune(r)
+		written++
 	}
 	return strings.TrimSpace(b.String())
 }

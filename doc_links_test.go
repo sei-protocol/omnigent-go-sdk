@@ -262,3 +262,74 @@ func TestThePackageDocIsNotSevered(t *testing.T) {
 			attached, total, pkg-attached)
 	}
 }
+
+// TestNoDeclarationHasASeveredDocComment pins that a comment group written to
+// document a declaration is attached to it.
+//
+// One blank line between a comment and the declaration below it detaches the two.
+// The comment stays in the file, reads as documentation to anyone scrolling past,
+// and reaches neither `go doc` nor pkg.go.dev. Two such comments shipped in this
+// package — one of them carrying the reason a status edge is trusted only on the
+// failed branch.
+//
+// gofmt, go vet, staticcheck and golangci-lint all pass a severed comment.
+// [TestThePackageDocIsNotSevered] covers the package clause; this covers the rest.
+func TestNoDeclarationHasASeveredDocComment(t *testing.T) {
+	t.Parallel()
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	fset := token.NewFileSet()
+	checked := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		checked++
+
+		// Every group go/ast attached to something. Whatever is left is loose.
+		attached := map[*ast.CommentGroup]bool{file.Doc: true}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch d := n.(type) {
+			case *ast.GenDecl:
+				attached[d.Doc] = true
+			case *ast.FuncDecl:
+				attached[d.Doc] = true
+			case *ast.TypeSpec:
+				attached[d.Doc] = true
+			case *ast.ValueSpec:
+				attached[d.Doc] = true
+			case *ast.Field:
+				attached[d.Doc] = true
+			}
+			return true
+		})
+
+		for _, group := range file.Comments {
+			if attached[group] || !strings.HasPrefix(group.List[0].Text, "//") {
+				continue
+			}
+			end := fset.Position(group.End()).Line
+			for _, decl := range file.Decls {
+				start := fset.Position(decl.Pos()).Line
+				// Exactly one blank line between the two: the signature of a group
+				// that was written as this declaration's doc and detached from it.
+				if start == end+2 {
+					t.Errorf("%s:%d: a %d-line comment is severed from the declaration "+
+						"at line %d by a blank line, so it reaches no reader of the "+
+						"documentation. Delete the blank line, or use // as the spacer.",
+						name, fset.Position(group.Pos()).Line, len(group.List), start)
+				}
+			}
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("scanned only %d files; the glob is wrong", checked)
+	}
+}

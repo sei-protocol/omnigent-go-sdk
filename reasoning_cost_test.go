@@ -3,6 +3,7 @@ package omnigent
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,10 @@ import (
 // Allocation rather than wall time, because a timing assertion is a flake on a
 // shared machine. The ratio is what distinguishes linear from quadratic; the
 // bound is loose on purpose.
+//
+// Not parallel, and it must not become so: runtime.ReadMemStats reads a
+// process-global counter, so any test allocating alongside this one is charged to
+// the fold.
 func TestTheReasoningFoldAllocatesLinearly(t *testing.T) {
 	const (
 		delta   = 64
@@ -28,21 +33,17 @@ func TestTheReasoningFoldAllocatesLinearly(t *testing.T) {
 
 	// No newline in the payload: the section never flushes a chunk, so the buffer
 	// grows to its full length. That is the shape that paid the whole cost.
-	payload := ""
-	for range delta {
-		payload += "x"
-	}
+	payload := strings.Repeat("x", delta)
 
 	events := func(yield func(Event, error) bool) {
 		if !yield(ResponseCreatedEvent{Type: "response.created", Response: ResponseObject{ID: "r1"}}, nil) {
 			return
 		}
-		for i := range deltas {
+		for range deltas {
 			e := ReasoningTextDeltaEvent{Type: "response.reasoning_text.delta", Delta: payload}
 			if !yield(e, nil) {
 				return
 			}
-			_ = i
 		}
 		yield(ResponseCompletedEvent{
 			Type:     "response.completed",
@@ -67,6 +68,11 @@ func TestTheReasoningFoldAllocatesLinearly(t *testing.T) {
 	t.Logf("folded %s of reasoning in %d blocks, allocating %s (%.1f bytes per input byte)",
 		bytesHuman(input), blocks, bytesHuman(allocated), ratio)
 
+	// A fold that yields nothing allocates nothing and would clear any bound, so
+	// the ratio only means something once the reasoning reached the output.
+	if blocks == 0 {
+		t.Fatal("the fold produced no blocks, so the cost bound measures nothing")
+	}
 	if ratio > maxCost {
 		t.Errorf("allocated %.1f bytes per input byte, want at most %d: the fold is "+
 			"copying the accumulated section rather than appending to it", ratio, maxCost)

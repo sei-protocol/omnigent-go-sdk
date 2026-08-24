@@ -87,3 +87,43 @@ func TestAResponseStartsOnWhicheverEventAnnouncesIt(t *testing.T) {
 		}
 	})
 }
+
+// TestAResponseEndIsAlwaysPrecededByItsStart pins that the two lifecycle hooks are
+// balanced.
+//
+// A subscription is registered at session create and survives across turns, so a
+// caller may attach after the announcing event was published and see only the
+// terminal snapshot. A hook pair that fires an end with no start makes a caller
+// tracking responses decrement something it never incremented. Upstream balances
+// the lifecycle from its terminal path for the same reason.
+func TestAResponseEndIsAlwaysPrecededByItsStart(t *testing.T) {
+	t.Parallel()
+
+	_, client := newChatServer(t, nil, []string{
+		echoFrame,
+		// No announcing event: this subscriber attached after it was published.
+		`{"type":"response.completed","response":{"id":"r1","model":"coder","status":"completed"}}`,
+	})
+
+	var lifecycle []string
+	chat, err := client.Chat("conv_1", ChatOptions{
+		Turn: TurnOptions{End: TurnEndsOnResponseLifecycle},
+		Hooks: StreamHooks{
+			OnResponseStart: func(c ResponseStartCtx) { lifecycle = append(lifecycle, "start:"+c.ResponseID) },
+			OnResponseEnd:   func(c ResponseEndCtx) { lifecycle = append(lifecycle, "end:"+c.ResponseID) },
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	for range chat.Send(ctx, "hi") {
+	}
+
+	want := []string{"start:r1", "end:r1"}
+	if len(lifecycle) != len(want) || lifecycle[0] != want[0] || lifecycle[1] != want[1] {
+		t.Errorf("the hooks fired %v, want %v: a terminal-only stream still owes the "+
+			"caller a start", lifecycle, want)
+	}
+}

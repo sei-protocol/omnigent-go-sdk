@@ -777,6 +777,7 @@ func TestOneCallIDRunsOnceWhateverAgentNameItCarries(t *testing.T) {
 		t.Error("the second delivery was dropped without saying so; a silent drop is " +
 			"indistinguishable from a call this client never saw")
 	}
+
 	_ = server
 }
 
