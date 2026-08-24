@@ -125,10 +125,8 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 			if err != nil {
 				// Flushed before the error, not after. [Client.Stream] documents an
 				// error step as the last one, so a caller writing the ordinary
-				// `if err != nil { return }` stops here — and the accumulated answer
-				// has to have arrived already or it is lost. Emitting it afterwards
-				// put blocks behind a terminal error and made the salvage below
-				// unreachable for the pattern that documentation recommends.
+				// `if err != nil { return }` stops here, and an answer emitted after
+				// the error is an answer that caller never reads.
 				if !state.endedResponse {
 					state.closeText()
 					state.closeReasoning()
@@ -144,12 +142,10 @@ func (bs *BlockStream) Blocks(events iter.Seq2[Event, error]) iter.Seq2[Block, e
 		// A sequence can end without a terminal response — a dropped stream, or a
 		// caller that stopped early. Whatever was accumulated is still the answer.
 		//
-		// Only when no terminal arrived. endResponse already flushed before emitting
-		// its end, so anything buffered afterwards arrived after the turn finished;
-		// emitting it would put a block after the last ResponseEndBlock, and a
-		// downstream SkipIntermediateEnds reads any such block as proof the end was
-		// intermediate and drops it. Upstream's fold emits nothing after its end for
-		// the same reason.
+		// Skipped once the response speaking has already ended, because endResponse
+		// flushed before emitting its end. A block after that end would read to a
+		// downstream [SkipIntermediateEnds] as proof the end was intermediate, and
+		// the turn would lose its ending.
 		if !state.endedResponse {
 			state.closeText()
 			state.closeReasoning()
@@ -184,7 +180,9 @@ func (s *blockState) fold(event Event) {
 	case ResponseCreatedEvent:
 		s.startResponse(e.Response)
 	case QueuedEvent:
-		s.startResponse(e.Response)
+		// Announced, not made live. A queued response has not begun speaking, and a
+		// second prompt typed while the agent works is not a second speaker.
+		s.announceResponse(e.Response)
 	case InProgressEvent:
 		s.startResponse(e.Response)
 
@@ -235,26 +233,38 @@ func (s *blockState) fold(event Event) {
 	}
 }
 
-// startResponse reports a response beginning, once.
+// announceResponse draws the start block for a response, once.
+//
+// The start block names its own model regardless of attribution, because this one
+// event does say which response it belongs to.
+func (s *blockState) announceResponse(response ResponseObject) {
+	if response.ID == "" || s.startedResponses[response.ID] {
+		return
+	}
+	s.startedResponses[response.ID] = true
+	s.put(ResponseStartBlock{blockCtx: s.at(), Model: response.Model, ResponseID: response.ID})
+}
+
+// startResponse records a response as speaking, then announces it.
+//
+// Liveness is recorded before the start block, not after it. A response
+// re-announced once it has been terminal is speaking again, and gating liveness on
+// "have we drawn a start for this yet" hides that overlap, which credits one
+// response's words to another with no signal.
+//
+// A re-announcement may omit the model, so a name already known survives one.
 func (s *blockState) startResponse(response ResponseObject) {
 	if response.ID == "" {
 		return
 	}
-	// Liveness is recorded before the start-block check, not after it. A response
-	// re-announced once it has been terminal is live again, and gating liveness on
-	// "have we drawn a start for this yet" hid that overlap — which made the fold
-	// credit one response's words to another with no signal.
-	s.liveResponses[response.ID] = response.Model
-	s.recomputeAttribution()
-
-	if s.startedResponses[response.ID] {
-		return
+	if _, live := s.liveResponses[response.ID]; !live || response.Model != "" {
+		s.liveResponses[response.ID] = response.Model
 	}
-	s.startedResponses[response.ID] = true
-	// The start block names its own model regardless of attribution, because this
-	// one event does say which response it belongs to.
-	start := ResponseStartBlock{blockCtx: s.at(), Model: response.Model, ResponseID: response.ID}
-	s.put(start)
+	// Per response, not per subscription. A response speaking again reopens the
+	// turn, so whatever it buffers from here is salvageable again.
+	s.endedResponse = false
+	s.recomputeAttribution()
+	s.announceResponse(response)
 }
 
 // recomputeAttribution credits later blocks to the one live response, or to
@@ -374,7 +384,10 @@ func (s *blockState) closeReasoning() {
 		})
 	}
 	s.inReasoning = false
-	s.reasoning = s.reasoning[:0]
+	// Released rather than truncated. appendReasoning reslices forward, so the
+	// header points into the middle of the backing array and [:0] would pin all of
+	// it for the life of the fold.
+	s.reasoning = nil
 	s.reasoningText.Reset()
 	s.summaryText.Reset()
 	s.reasoningChunked = false
