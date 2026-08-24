@@ -8,6 +8,15 @@ import (
 )
 
 // ToolCallInfo describes one tool call the agent asked the client to run.
+//
+// It carries what the streamed item carries and nothing more. A response id and an
+// agent name would both be useful and neither is on this wire: the call's payload
+// declares call_id, name, arguments and model. Upstream draws the same line — its
+// sessions-API tool info carries only what an item does.
+//
+// [StreamHooks.OnToolCallStart] still reports the agent name, because an observer
+// wants everything the item offers. A tool does not need it to answer, and it is a
+// field the server chooses, so it is not identity.
 type ToolCallInfo struct {
 	// Name is the tool the agent called.
 	Name string
@@ -23,25 +32,6 @@ type ToolCallInfo struct {
 	// server sent none.
 	ItemID string
 }
-
-// This carries what the item carries and nothing more.
-//
-// A response id, a tool-loop iteration and an agent name would all be useful, and
-// none of them is on the wire here: an item declares created_at, created_by, data,
-// id, response_id, status and type, and the call's own payload declares call_id,
-// name, arguments and model. Upstream draws the same line, and says why — its
-// responses-API tool info carries that triple because the responses stream
-// supplies it, and its sessions-API tool info carries only what an item does.
-//
-// Earlier revisions of this type declared ResponseID and Iteration and filled
-// them from the reader's own running state. Both were wrong in practice, because
-// the state they read from is keyed on an event a live turn never sends. A field
-// that is always empty is worse than an absent one: a caller writes an audit
-// record against it.
-//
-// [StreamHooks.OnToolCallStart] still reports the agent name, because an observer
-// wants everything the item offers. A tool does not need it to answer, and it is
-// a field the server chooses, so it is not identity.
 
 // ToolFunc runs one client-side tool call.
 //

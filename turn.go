@@ -136,7 +136,6 @@ func newTurnTracker(opts TurnOptions, sessionID string) *turnTracker {
 // a sender hoping an omission reads as consent. Taken only on the failed branch,
 // where dropping it would lose a session-level fault a caller is waiting on, and
 // where ending the turn early is the safe direction anyway.
-
 func (t *turnTracker) describesThisSession(conversationID string) bool {
 	return conversationID == t.sessionID
 }

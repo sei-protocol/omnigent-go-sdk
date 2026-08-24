@@ -159,10 +159,12 @@ func SkipIntermediateEnds() Transform {
 					continue
 				}
 				// A non-end block means the buffered end was intermediate, so it is
-				// dropped. That is only sound while a terminal response is the last
-				// block a turn produces, which is [BlockStream]'s job rather than
-				// this one's: upstream's fold flushes text inside its terminal
-				// handler and emits nothing after the end, and so does ours.
+				// dropped. That is sound only while a terminal response is the last
+				// block a turn produces, and it is not guaranteed: an output item, an
+				// error, a retry, a compaction or a file arriving after the terminal
+				// costs the turn its ending. Upstream drops it on the same rule, so
+				// this matches rather than diverges — but a caller waiting on an end
+				// should read [BlockStream] output directly.
 				held = nil
 				if !yield(block, nil) {
 					return
