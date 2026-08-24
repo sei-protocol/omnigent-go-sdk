@@ -92,9 +92,7 @@ type ResponseStartBlock struct {
 
 // ToolExecution is one tool call paired with its result.
 //
-// Not a [Block]: it is what a [ToolGroup] holds. A batch of calls from one
-// iteration renders as one group, so a caller draws the batch rather than
-// discovering its shape from a run of separate blocks.
+// Not a [Block]: it is what a [ToolGroup] holds, one per group today.
 type ToolExecution struct {
 	// Name is the tool called, e.g. "Read".
 	Name string
@@ -123,17 +121,17 @@ type ToolExecution struct {
 	Output *string
 }
 
-// ToolGroup is a tool call, with room for the batch the wire does not yet group.
+// ToolGroup is a batch of tool calls, which today always holds one.
 //
-// The fold reports one call per group, because the server delivers one item per
-// call and nothing in the item says which calls were issued together. A renderer
-// should therefore expect a run of single-execution groups rather than one group
-// per iteration, and range Executions rather than indexing it.
+// The server delivers one item per call and nothing in the item says which calls
+// were issued together, so the fold cannot group them. Range Executions rather
+// than indexing it: a renderer that assumes one draws nothing on the day the wire
+// starts grouping. Upstream's client carries the same list and fills it the same
+// way, so the shape is theirs rather than a guess.
 type ToolGroup struct {
 	blockCtx
 
 	// Executions are the calls in this group, in the order the server reported them.
-	// One, until the wire distinguishes a batch.
 	Executions []ToolExecution
 }
 
