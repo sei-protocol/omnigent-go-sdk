@@ -64,11 +64,14 @@ def drop_collection_pointers(node) -> int:
     collection from an absent one. `UpdateSessionRequest.terminal_launch_args`
     says "a list (including `[]`) replaces the stored value wholesale ... `None`
     leaves unchanged", and `UpdateProjectRequest.config` says the same of `{}`.
-    Neither is reachable through this module, and neither was before this
-    transform existed: the hand-written types were already plain slices. Fixing
-    it means giving those two fields back their pointers, which changes the
-    public surface, so it belongs in its own change. `setdefault` above is what
-    makes that fix expressible from the document.
+
+    `UpdateProjectRequest` is unreachable through this module. `UpdateSessionRequest`
+    is not: `Sessions.Update` takes one. So a caller cannot send `[]` to clear
+    `terminal_launch_args` wholesale, which is what the property offers. That is
+    unchanged from before this transform existed, because the hand-written type was
+    already a plain slice with `omitempty`. Fixing it means giving both fields back
+    their pointers, which changes the public surface, so it belongs in its own
+    change. `setdefault` above is what makes that fix expressible from the document.
     """
     n = 0
     if isinstance(node, dict):

@@ -292,9 +292,6 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	}
 }
 
-// TestEveryUnionMemberIsRegistered pins the registry against the spec's own
-// discriminator mapping, so a variant the server publishes and this package does
-// not know is visible here rather than as an UnknownEvent in production.
 // TestEveryUnionMemberIsRegistered pins the direction the field checks cannot
 // cover: that this package reaches every event the document declares.
 //

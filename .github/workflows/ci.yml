@@ -121,7 +121,7 @@ jobs:
       # file.
       #
       # This is the only check that catches a spec bump nobody regenerated for. A
-      # new event variant fails TestEveryUnionVariantHasAGoType and a retyped
+      # new event variant fails TestEveryUnionMemberIsRegistered and a retyped
       # field fails the conformance suite, but a new field on an existing schema
       # is invisible to both: they read a Go type and ask the document about it,
       # so a field no Go type declares is a field nothing asks about.
