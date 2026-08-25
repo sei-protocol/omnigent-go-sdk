@@ -1,0 +1,39 @@
+name: AI Review
+# seidroid's three-pass PR review: an OpenAI Codex scout, then Claude synthesizes and
+# posts one PR review plus an `AI Review` check run.
+#
+# labeled/unlabeled are in the trigger list so adding `ai: skip-review` or `ai: nitpick`
+# takes effect on the open pull request rather than on its next push.
+on:
+  pull_request:
+    types: [ opened, ready_for_review, synchronize, reopened, labeled, unlabeled ]
+  issue_comment:
+    types: [ created ]
+  pull_request_review_comment:
+    types: [ created ]
+  pull_request_review:
+    types: [ submitted ]
+jobs:
+  ai-review:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request != null
+    # See: https://github.com/sei-protocol/uci/releases/tag/v0.0.19
+    uses: sei-protocol/uci/.github/workflows/ai-review.yml@eb65d6d3f967c661f6af91cfac599fd355445f71
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+      id-token: write # Anthropic workload identity federation
+    secrets: inherit
+    with:
+      # See: https://github.com/sei-protocol/uci/releases/tag/v0.0.19
+      uci-ref: eb65d6d3f967c661f6af91cfac599fd355445f71
+      allowed-team: 'sei-protocol/sei-core'
+      # This module's conventions are the review standard, so the reviewer reads them
+      # rather than a second file that would restate them and drift.
+      guidelines-file: AGENTS.md
+      # Codex reviews with the network off, so the module cache has to be warm or every
+      # import reads as unresolved.
+      prebuild-script: 'go mod download'
+      # The Cursor scout installs its CLI by piping an external installer into bash. The
+      # Codex scout covers the same pass without that, and sei-chain disables it too.
+      enable-cursor: false
