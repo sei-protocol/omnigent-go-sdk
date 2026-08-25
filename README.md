@@ -2,14 +2,14 @@
 
 A Go client for the omnigent server.
 
-## Status: rebuilt, shipped in v0.2.0
+## Status: rebuilt, shipped in v0.2.x
 
 This module was rebuilt to match the shape of the upstream Python client at
 [omnigent-ai/omnigent](https://github.com/omnigent-ai/omnigent), under
 `sdks/python-client`. That client is an agent-interaction library. This module was
 a typed transport. The rebuild closed the difference.
 
-All four milestones are in `v0.2.0`:
+All four milestones are in `v0.2.0`, and `v0.2.1` is the current release:
 
 | Milestone | Contents | Status |
 |---|---|---|
@@ -36,12 +36,15 @@ its own change in that repository.
 Pin a released version:
 
 ```sh
-go get github.com/sei-protocol/omnigent-go-sdk@v0.2.0
+go get github.com/sei-protocol/omnigent-go-sdk@v0.2.1
 ```
 
-`v0.2.0` is the current release and the first carrying this surface: sessions,
-files, the turn loop, block folding and client-side tools. `@latest` resolves to
-it.
+`v0.2.1` is the current release. Pin it rather than `v0.2.0`, which is the one
+release whose approval hook cannot see the tool it is approving — the elicitation
+params lost their undeclared properties there, and `tool_name` is among them.
+
+`v0.2.0` was the first release carrying this surface: sessions, files, the turn
+loop, block folding and client-side tools. `@latest` resolves to `v0.2.1`.
 
 Coming from `v0.1.x` is a breaking upgrade. Three exported fields changed type,
 and one of them changes decoding rather than only compilation:
