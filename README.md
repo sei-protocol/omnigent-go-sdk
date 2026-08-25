@@ -31,16 +31,19 @@ declaration over it, so a generated name never reaches a consumer.
 Pin a released version:
 
 ```sh
-go get github.com/sei-protocol/omnigent-go-sdk@v0.1.2
+go get github.com/sei-protocol/omnigent-go-sdk@v0.2.0
 ```
 
-`v0.1.2` is the last release, and it carries the *previous* implementation — not
-the surface this rebuild describes. `@latest` resolves to it until the rebuild
-publishes its own release.
+`v0.2.0` is the current release and the first carrying this surface: sessions,
+files, the turn loop, block folding and client-side tools. `@latest` resolves to
+it.
 
-`@main` carries the rebuild as it lands, so a consumer who wants the new surface
-before that release pins a commit. The session, files, turn-loop and tool surfaces
-are not there yet.
+Coming from `v0.1.x` is a breaking upgrade. Three exported fields changed type,
+and one of them changes decoding rather than only compilation:
+`ReasoningData.Content` and `.Summary` are `[]map[string]string`, so a reasoning
+block carrying a non-string value now fails to unmarshal where it previously
+decoded into `any`. That reaches a caller at runtime. The release notes list all
+three.
 
 ## The vendored description
 
