@@ -398,11 +398,11 @@ func TestStreamRequiresASessionID(t *testing.T) {
 // releasableClock is a clock that reads zero until the test releases it, and then
 // runs away.
 //
-// Both halves matter. Held at zero, no scheduling delay can make the watchdog
+// Both halves matter. Held at zero, no scheduling delay can make the monitor
 // judge a stream idle, so a test can be sure the frames it expects arrive however
 // loaded the runner is. Released, every reading is a further timeout past the
 // last, so the next check fires whatever order it lands in — including after the
-// resume that follows a caller's handler, which re-baselines the watchdog and
+// resume that follows a caller's handler, which re-baselines the monitor and
 // would defeat a clock that only jumped once.
 type releasableClock struct {
 	step     time.Duration
@@ -436,7 +436,7 @@ func TestStreamIdleTimeout(t *testing.T) {
 	const idleTimeout = 20 * time.Millisecond
 
 	// One frame, then silence: the server this stands in for would have
-	// heartbeated, so the watchdog firing is the correct diagnosis.
+	// heartbeated, so the monitor firing is the correct diagnosis.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
 		<-r.Context().Done()
@@ -449,8 +449,8 @@ func TestStreamIdleTimeout(t *testing.T) {
 	}
 
 	clock := &releasableClock{step: idleTimeout}
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
-		return newIdleWatchdogWithClock(timeout, cancel, clock.elapsed)
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, clock.elapsed)
 	}
 
 	var (
@@ -482,7 +482,7 @@ func TestStreamIdleTimeout(t *testing.T) {
 // TestStreamPerCallIdleTimeoutOverridesTheClientDefault pins which of the two
 // timeouts a stream is built with.
 //
-// It reads the value handed to the watchdog rather than waiting to see which one
+// It reads the value handed to the monitor rather than waiting to see which one
 // expires. That is the property — [StreamOptions.IdleTimeout] outranks
 // [WithStreamIdleTimeout] — and waiting for a firing showed it only by inference,
 // at 150ms a run: an hour failing to elapse is not evidence that the hour was the
@@ -501,9 +501,9 @@ func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 	}
 
 	var built atomic.Int64
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
 		built.Store(int64(timeout))
-		return newIdleWatchdog(timeout, cancel)
+		return newIdleMonitor(timeout, cancel)
 	}
 
 	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1",
@@ -512,7 +512,7 @@ func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 	}
 
 	if got := time.Duration(built.Load()); got != perCall {
-		t.Errorf("the stream's watchdog was built with %s, want the per-call %s: "+
+		t.Errorf("the stream's monitor was built with %s, want the per-call %s: "+
 			"StreamOptions.IdleTimeout outranks WithStreamIdleTimeout", got, perCall)
 	}
 }
@@ -642,30 +642,30 @@ func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
 	}
 }
 
-// TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete is P3, stated on
+// TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete is P3, stated on
 // a clock the test drives.
 //
-// The watchdog was fed once per completed line, so the idle timeout bounded not
+// The monitor was fed once per completed line, so the idle timeout bounded not
 // only silence but the whole transfer of one frame — and this server writes a
 // frame as a single data: line, the snapshot-on-connect one approaching
 // maxFrameBytes. A throttled link therefore reported ErrStreamIdle partway
-// through a perfectly healthy frame. The watchdog is fed by bytes arriving
+// through a perfectly healthy frame. The monitor is fed by bytes arriving
 // instead, so a frame that keeps arriving keeps the stream alive however long it
 // takes.
 //
 // Driven rather than raced. The property is "silence is measured from the last
 // bytes read", and a test that expressed it by sleeping between writes asserted
-// something about the runner's scheduler as much as about the watchdog: the
+// something about the runner's scheduler as much as about the monitor: the
 // original slept 25ms against a 200ms timeout, an 8x margin a loaded CI runner
 // ate often enough to fail the job. Here the clock only moves when this test
 // moves it, so the same answer comes back every run.
-func TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete(t *testing.T) {
+func TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete(t *testing.T) {
 	t.Parallel()
 
 	const timeout = time.Minute
 
 	// Far past the timeout with nothing read: the state a slow frame's transfer
-	// reaches, and the state the old watchdog cancelled in.
+	// reaches, and the state the old monitor cancelled in.
 	elapsed := timeout * 10
 
 	t.Run("bytes read inside the gap keep the stream alive", func(t *testing.T) {
@@ -675,25 +675,25 @@ func TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete(t *testing.T)
 		defer cancel()
 
 		var clock atomic.Int64
-		watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+		monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 			return time.Duration(clock.Load())
 		})
-		defer watchdog.stop()
+		defer monitor.stop()
 
 		clock.Store(int64(elapsed))
-		reader := &watchdogReader{inner: strings.NewReader("more of the same frame"), watchdog: watchdog}
+		reader := &monitoredReader{inner: strings.NewReader("more of the same frame"), monitor: monitor}
 		if _, err := reader.Read(make([]byte, 8)); err != nil {
 			t.Fatalf("read: %v", err)
 		}
 
-		watchdog.check()
+		monitor.check()
 
-		if watchdog.expired() {
-			t.Error("the watchdog reported silence although bytes had just arrived: " +
+		if monitor.expired() {
+			t.Error("the monitor reported silence although bytes had just arrived: " +
 				"a frame still being delivered is a slow link, not a dead one")
 		}
 		if ctx.Err() != nil {
-			t.Errorf("the watchdog cancelled a stream that was still receiving: %v", ctx.Err())
+			t.Errorf("the monitor cancelled a stream that was still receiving: %v", ctx.Err())
 		}
 	})
 
@@ -704,18 +704,18 @@ func TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete(t *testing.T)
 		defer cancel()
 
 		var clock atomic.Int64
-		watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+		monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 			return time.Duration(clock.Load())
 		})
-		defer watchdog.stop()
+		defer monitor.stop()
 
 		// Same clock, same timeout, no read. This is what makes the case above
 		// mean something: the read is the only difference between them.
 		clock.Store(int64(elapsed))
-		watchdog.check()
+		monitor.check()
 
-		if !watchdog.expired() {
-			t.Error("the watchdog did not fire on a transport that delivered nothing")
+		if !monitor.expired() {
+			t.Error("the monitor did not fire on a transport that delivered nothing")
 		}
 		if !errors.Is(ctx.Err(), context.Canceled) {
 			t.Errorf("ctx error = %v, want context.Canceled", ctx.Err())
@@ -723,14 +723,14 @@ func TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete(t *testing.T)
 	})
 }
 
-// TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead pins both halves of the
+// TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead pins both halves of the
 // bracket the read loop puts around every call into the caller's code.
 //
 // suspend has to stop the judging, and resume has to re-baseline. Resume's half
 // is easy to lose, because in most tests a read follows immediately and records
 // activity anyway — so the mutation survives everything except a check taken
 // between the resume and the next read, which is what this does.
-func TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead(t *testing.T) {
+func TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead(t *testing.T) {
 	t.Parallel()
 
 	const timeout = time.Minute
@@ -739,46 +739,46 @@ func TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead(t *testing.T) {
 	defer cancel()
 
 	var clock atomic.Int64
-	watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 		return time.Duration(clock.Load())
 	})
-	defer watchdog.stop()
+	defer monitor.stop()
 
 	// The caller's handler runs long, and an expiry lands while it does.
-	watchdog.suspend()
+	monitor.suspend()
 	clock.Store(int64(timeout * 10))
-	watchdog.check()
-	if watchdog.expired() {
-		t.Fatal("the watchdog judged a gap it was suspended for: a slow handler is " +
+	monitor.check()
+	if monitor.expired() {
+		t.Fatal("the monitor judged a gap it was suspended for: a slow handler is " +
 			"not a silent transport")
 	}
 
 	// The handler returns, and the next expiry lands before any further bytes.
-	watchdog.resume()
-	watchdog.check()
-	if watchdog.expired() {
-		t.Error("the watchdog counted the suspended gap once it resumed: resume has " +
+	monitor.resume()
+	monitor.check()
+	if monitor.expired() {
+		t.Error("the monitor counted the suspended gap once it resumed: resume has " +
 			"to restart the clock, or the handler's time is charged to the transport")
 	}
 	if ctx.Err() != nil {
-		t.Errorf("the watchdog cancelled a live stream: %v", ctx.Err())
+		t.Errorf("the monitor cancelled a live stream: %v", ctx.Err())
 	}
 }
 
-// TestStreamReadsItsBodyThroughTheWatchdog is the wiring half.
+// TestStreamReadsItsBodyThroughTheIdleMonitor is the wiring half.
 //
-// [TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete] proves the
-// watchdog counts silence from the last bytes read. That only reaches a real
-// stream if [Client.Stream] reads the response body through a [watchdogReader],
+// [TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete] proves the
+// monitor counts silence from the last bytes read. That only reaches a real
+// stream if [Client.Stream] reads the response body through a [monitoredReader],
 // which is the line a refactor drops silently: every other test still passes,
-// because a stream that is never quiet never needs the watchdog.
+// because a stream that is never quiet never needs the monitor.
 //
-// So this counts the readings the watchdog takes. Reading through the watchdog
+// So this counts the readings the monitor takes. Reading through the monitor
 // takes one per Read that delivered bytes, which for a frame written in chunks is
 // many; reading around it takes the one at construction and nothing else. The
 // clock never advances, so no scheduling delay can end this stream — the test
 // says nothing about timing, only about wiring.
-func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
+func TestStreamReadsItsBodyThroughTheIdleMonitor(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -809,11 +809,11 @@ func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	// A clock that never moves, so the watchdog cannot fire whatever the runner
+	// A clock that never moves, so the monitor cannot fire whatever the runner
 	// is doing, and every reading it takes is counted.
 	var readings atomic.Int64
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
-		return newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 			readings.Add(1)
 			return 0
 		})
@@ -833,21 +833,21 @@ func TestStreamReadsItsBodyThroughTheWatchdog(t *testing.T) {
 	// Two readings come from elsewhere: one at construction, one from the resume
 	// after this stream's single event. A third can only have come from a Read.
 	// The frame is 96 KiB against a 64 KiB scanner buffer, so a body read through
-	// the watchdog cannot deliver it in one.
+	// the monitor cannot deliver it in one.
 	if got := readings.Load(); got < 3 {
-		t.Errorf("the watchdog took %d clock readings; a body read through it takes "+
+		t.Errorf("the monitor took %d clock readings; a body read through it takes "+
 			"one per delivering Read, so this stream is not reading through it at all", got)
 	}
 }
 
-// TestStreamIdleTimeoutFiresMidFrame is the other half of P3: feeding the watchdog
+// TestStreamIdleTimeoutFiresMidFrame is the other half of P3: feeding the monitor
 // on byte progress must not let a half-arrived frame hold it off forever. A frame
 // that stops mid-line and never resumes is a dead transport like any other.
 //
 // The clock is released by the handler rather than by the caller's loop, because
 // there is no event here to hand back — and no rendezvous is needed either way.
 // The outcome is the same whether the truncated bytes were read before the
-// watchdog fired or not: no event can be built from half a line.
+// monitor fired or not: no event can be built from half a line.
 func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	t.Parallel()
 
@@ -871,8 +871,8 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
-		return newIdleWatchdogWithClock(timeout, cancel, clock.elapsed)
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, clock.elapsed)
 	}
 
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
@@ -894,14 +894,14 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 // what makes the result independent of when reads land — HTTP buffering can
 // deliver three writes in one Read, so a test that advanced a full gap per
 // heartbeat would fire or not depending on the transport's buffer size rather
-// than on the watchdog.
+// than on the monitor.
 //
-// What this does not pin: that arriving bytes are what rearm the watchdog. A
+// What this does not pin: that arriving bytes are what rearm the monitor. A
 // clock kept under the timeout cannot fire whatever feeds it, and counting the
-// watchdog's clock readings does not separate the two either, because resume
+// monitor's clock readings does not separate the two either, because resume
 // takes one after every event delivered. That half is
-// [TestABytesArrivingResetTheWatchdogWhileALineIsStillIncomplete] and
-// [TestStreamReadsItsBodyThroughTheWatchdog]; here the subject is the gap.
+// [TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete] and
+// [TestStreamReadsItsBodyThroughTheIdleMonitor]; here the subject is the gap.
 func TestAPauseShorterThanTheTimeoutIsNotSilence(t *testing.T) {
 	t.Parallel()
 
@@ -931,8 +931,8 @@ func TestAPauseShorterThanTheTimeoutIsNotSilence(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
-		return newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 			return time.Duration(clock.Load())
 		})
 	}
@@ -1125,39 +1125,39 @@ func settle(t *testing.T) {
 	}
 }
 
-// TestIdleWatchdogIgnoresAnExpiryThatDataBeat is the unit-level statement of the
+// TestIdleMonitorIgnoresAnExpiryThatDataBeat is the unit-level statement of the
 // race: a frame that lands while the timer's callback is already in flight must
 // not be read as silence. Timer.Reset does not un-run a started callback, so the
 // callback has to re-check the clock itself — which is what this drives, by
 // running the expiry hook directly after recording activity.
-func TestIdleWatchdogIgnoresAnExpiryThatDataBeat(t *testing.T) {
+func TestIdleMonitorIgnoresAnExpiryThatDataBeat(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	watchdog := newIdleWatchdog(time.Hour, cancel)
-	defer watchdog.stop()
+	monitor := newIdleMonitor(time.Hour, cancel)
+	defer monitor.stop()
 
-	watchdog.alive()
-	watchdog.check()
+	monitor.alive()
+	monitor.check()
 
-	if watchdog.expired() {
-		t.Error("the watchdog reported an idle stream although a frame had just arrived")
+	if monitor.expired() {
+		t.Error("the monitor reported an idle stream although a frame had just arrived")
 	}
 	if ctx.Err() != nil {
-		t.Errorf("the watchdog cancelled a live stream: %v", ctx.Err())
+		t.Errorf("the monitor cancelled a live stream: %v", ctx.Err())
 	}
 }
 
-// TestIdleWatchdogStillFiresOnRealSilence is the other half: with no activity
+// TestIdleMonitorStillFiresOnRealSilence is the other half: with no activity
 // recorded inside the timeout, the expiry must cancel.
 //
-// It drives the watchdog's clock rather than sleeping, so the condition is
+// It drives the monitor's clock rather than sleeping, so the condition is
 // stated instead of raced: no scheduler, the same answer every run. A wall-clock
 // timeout cannot state it, because time.Now's resolution is coarser than a
 // nanosecond on some platforms and two readings can be equal.
-func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
+func TestIdleMonitorStillFiresOnRealSilence(t *testing.T) {
 	t.Parallel()
 
 	const timeout = time.Minute
@@ -1166,31 +1166,31 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 	defer cancel()
 
 	var clock atomic.Int64
-	watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 		return time.Duration(clock.Load())
 	})
-	defer watchdog.stop()
+	defer monitor.stop()
 
 	// Real time passes while the stream's clock does not: an expiry now is the
 	// timer firing early, and must re-arm rather than cancel.
-	watchdog.check()
-	if watchdog.expired() {
-		t.Fatal("the watchdog fired with no time elapsed on the clock it measures")
+	monitor.check()
+	if monitor.expired() {
+		t.Fatal("the monitor fired with no time elapsed on the clock it measures")
 	}
 
 	// Now silence longer than the timeout, and nothing else changed.
 	clock.Store(int64(timeout + 1))
-	watchdog.check()
+	monitor.check()
 
-	if !watchdog.expired() {
-		t.Error("the watchdog did not fire on a stream that was genuinely silent")
+	if !monitor.expired() {
+		t.Error("the monitor did not fire on a stream that was genuinely silent")
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Errorf("ctx error = %v, want context.Canceled", ctx.Err())
 	}
 }
 
-// TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock is S4. alive() stored
+// TestIdleMonitorMeasuresMonotonicTimeNotTheWallClock is S4. alive() stored
 // time.Now().UnixNano() and check() compared it back with
 // time.Since(time.Unix(0, last)) — and time.Unix reconstructs a Time with no
 // monotonic reading, so that comparison is wall clock against wall clock. A clock
@@ -1198,26 +1198,26 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 // healthy stream or hide a dead one, and a stream has no other liveness control.
 //
 // The check is on what gets recorded, because that is where the wall clock
-// entered: nanoseconds since the watchdog started, not nanoseconds since 1970.
+// entered: nanoseconds since the monitor started, not nanoseconds since 1970.
 // Against feat/go-client-v2 this fails with a recorded value around 1.7e18.
-func TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
+func TestIdleMonitorMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
 	t.Parallel()
 
 	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	watchdog := newIdleWatchdog(time.Hour, cancel)
-	defer watchdog.stop()
+	monitor := newIdleMonitor(time.Hour, cancel)
+	defer monitor.stop()
 
-	watchdog.alive()
-	recorded := watchdog.last.Load()
+	monitor.alive()
+	recorded := monitor.last.Load()
 	if recorded > int64(time.Minute) {
-		t.Errorf("the watchdog recorded %d ns of elapsed time, which is a wall-clock timestamp "+
+		t.Errorf("the monitor recorded %d ns of elapsed time, which is a wall-clock timestamp "+
 			"rather than a monotonic elapsed reading; a clock adjustment would break liveness detection",
 			recorded)
 	}
 	if recorded < 0 {
-		t.Errorf("the watchdog recorded %d ns, which cannot be elapsed time", recorded)
+		t.Errorf("the monitor recorded %d ns, which cannot be elapsed time", recorded)
 	}
 }
 
@@ -1237,12 +1237,12 @@ func TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
 // the same question.
 //
 // Calling check from inside the handler is what makes it falsifiable: suspended,
-// the watchdog must re-arm without judging the gap at all. Drop the suspend and
+// the monitor must re-arm without judging the gap at all. Drop the suspend and
 // this cancels the stream on the first event.
 //
 // It does not pin resume's own re-baseline, because the whole response is already
 // buffered here, so the read after the handler records activity anyway. That half
-// is pinned in [TestTheWatchdogDoesNotCountTimeSpentOutsideTheRead].
+// is pinned in [TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead].
 func TestASlowHandlerDoesNotCountAsASilentTransport(t *testing.T) {
 	t.Parallel()
 
@@ -1262,14 +1262,14 @@ func TestASlowHandlerDoesNotCountAsASilentTransport(t *testing.T) {
 	}
 
 	var (
-		clock    atomic.Int64
-		watchdog *idleWatchdog
+		clock   atomic.Int64
+		monitor *idleMonitor
 	)
-	client.newWatchdog = func(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
-		watchdog = newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		monitor = newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 			return time.Duration(clock.Load())
 		})
-		return watchdog
+		return monitor
 	}
 
 	var (
@@ -1285,7 +1285,7 @@ func TestASlowHandlerDoesNotCountAsASilentTransport(t *testing.T) {
 		// A handler far slower than the idle timeout, with the whole response
 		// already buffered in the transport, and an expiry landing while it runs.
 		clock.Add(int64(4 * idleTimeout))
-		watchdog.check()
+		monitor.check()
 	}
 
 	if streamErr != nil {
@@ -1398,7 +1398,7 @@ func TestStreamMissingSessionIDIsMatchable(t *testing.T) {
 //
 // The idle timeout here is short on purpose: against feat/go-client-v2 this test
 // fails by taking the whole timeout and reporting ErrStreamIdle — the frame was
-// still being accumulated when the watchdog gave up — instead of refusing the
+// still being accumulated when the monitor gave up — instead of refusing the
 // frame the moment it outgrew the limit.
 func TestStreamBoundsTheAccumulatedFrameNotJustOneLine(t *testing.T) {
 	t.Parallel()
