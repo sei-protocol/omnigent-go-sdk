@@ -1,0 +1,33 @@
+name: Diag Claude Auth
+# TEMPORARY. Reads the error that uci's ai-review hides behind
+# "full output hidden for security". Delete this file and the branch once the
+# question is answered.
+on:
+  push:
+    branches: [ diag/claude-auth ]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the OIDC subject this repo presents
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const t = await core.getIDToken();
+            const claims = JSON.parse(Buffer.from(t.split('.')[1], 'base64url').toString());
+            for (const k of ['iss','sub','aud','repository','repository_owner','repository_visibility','event_name','ref','workflow_ref']) {
+              core.info(`${k} = ${claims[k]}`);
+            }
+      - name: Run claude-code-action with output shown
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_federation_rule_id: ${{ vars.PLATFORM_CODE_AGENT_ANTHROPIC_FDRL_ID }}
+          anthropic_organization_id: ${{ vars.SEI_LABS_ANTHROPIC_ORG_ID }}
+          anthropic_service_account_id: ${{ vars.PLATFORM_CODE_AGENT_ANTHROPIC_SVAC_ID }}
+          show_full_output: true
+          prompt: 'Reply with the single word: ok'
