@@ -150,12 +150,18 @@ type ElicitationCtx struct {
 	// Read a value in two steps, because absent and present-but-not-a-string are
 	// different answers and only one of them means the server said nothing:
 	//
-	//	name, ok := ctx.Extra["tool_name"].(string)
+	//	raw, present := ctx.Extra["tool_name"]
+	//	name, valid := raw.(string)
+	//
+	// A single assertion reports both as false and cannot tell them apart, which
+	// is the whole reason this is a map rather than a named field.
 	//
 	// Treat either miss as unknown and fail closed. A declared field's type is
 	// enforced by the decoder and a violation rejects the whole event; nothing
 	// enforces a type here, so a policy that cannot see the tool it is gating
-	// should decline rather than fall through to a broader rule.
+	// should decline rather than fall through to a broader rule. Present but not
+	// a string is worth logging on its own: the server does not send that shape,
+	// so something else did.
 	//
 	// A map rather than named fields because the set is the server's to change.
 	// Naming one here would make the SDK's opinion about which extra matters
