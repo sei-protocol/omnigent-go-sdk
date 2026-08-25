@@ -13,7 +13,7 @@ import (
 // Three accumulators here once appended to a plain string, and the newline scan
 // once walked the whole buffer per delta. Both are quadratic in the section's
 // length, and both ran on the goroutine draining the socket with the idle
-// watchdog suspended — so a long reasoning section made the client slow and
+// monitor suspended — so a long reasoning section made the client slow and
 // silent at the same time. Measured before the fix: 1.4 GB of allocation to fold
 // 343 KB, and 37s of CPU at 31 MiB.
 //

@@ -177,10 +177,10 @@
 // bounded either way by the transport, so a server that accepts a connection and
 // then says nothing still fails fast.
 //
-// Liveness on the stream is enforced instead by an idle watchdog — the server
+// Liveness on the stream is enforced instead by an idle monitor — the server
 // emits a heartbeat frame every 15 seconds of queue silence, so a read that
 // blocks for longer than [StreamOptions.IdleTimeout] means the transport is gone.
-// The watchdog measures time blocked on a read, not wall-clock time: it is
+// The monitor measures time blocked on a read, not wall-clock time: it is
 // suspended while the caller's own loop body runs, so a slow event handler cannot
 // be mistaken for a dead server. Response-header latency stays bounded for both
 // clients by the one transport's ResponseHeaderTimeout, which is the unary bound

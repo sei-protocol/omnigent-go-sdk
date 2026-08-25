@@ -382,40 +382,138 @@ func TestStreamSkippedFrameHookCanEndTheStream(t *testing.T) {
 	}
 }
 
-// TestStreamSkippingEveryFrameIsNotASilentEmptyStream keeps the property that
-// made the Go client better than the reference here: a stream that delivers no
-// event cannot end quietly. Skipping a frame is a degradation, but skipping every
-// frame a stream carried is a failure, and reporting it is what stops a decode
-// failure from being read as an agent that said nothing.
-func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
+func TestStreamRequiresASessionID(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(sseHandler(
-		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":42}`),
-		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":43}`),
-		"data: [DONE]\n\n",
-	))
-	defer server.Close()
-
-	client, err := New(server.URL)
+	client, err := New("http://example.invalid")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
+	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "sessionID is required") {
+		t.Fatalf("stream error = %v, want one naming the missing session id", streamErr)
+	}
+}
 
-	if len(events) != 0 {
-		t.Errorf("events = %v, want none: neither frame was decodable", events)
+// releasableClock is a clock that reads zero until the test releases it, and then
+// runs away.
+//
+// Both halves matter. Held at zero, no scheduling delay can make the monitor
+// judge a stream idle, so a test can be sure the frames it expects arrive however
+// loaded the runner is. Released, every reading is a further timeout past the
+// last, so the next check fires whatever order it lands in — including after the
+// resume that follows a caller's handler, which re-baselines the monitor and
+// would defeat a clock that only jumped once.
+type releasableClock struct {
+	step     time.Duration
+	released atomic.Bool
+	ticks    atomic.Int64
+}
+
+func (c *releasableClock) elapsed() time.Duration {
+	if !c.released.Load() {
+		return 0
 	}
-	if !errors.Is(streamErr, ErrStreamProtocol) {
-		t.Fatalf("stream error = %v, want it to wrap ErrStreamProtocol", streamErr)
+	return time.Duration(c.ticks.Add(int64(c.step)))
+}
+
+// release starts the clock. Silence after this point is silence at any speed.
+func (c *releasableClock) release() { c.released.Store(true) }
+
+// TestStreamIdleTimeout pins that a transport that stops talking ends the stream
+// with [ErrStreamIdle], and that the frames it did send arrive first.
+//
+// The stream's timer still runs on real time, so a check lands when it lands.
+// What the clock decides is the verdict that check reaches, and that no check
+// before the release can reach it at all. The previous version instead gave the
+// heartbeat a 150ms head start and hoped: a runner that stalled there failed on
+// the missing heartbeat rather than on the timeout it was testing.
+func TestStreamIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Short, because this is now only the interval between checks, not a margin
+	// that delivery has to beat.
+	const idleTimeout = 20 * time.Millisecond
+
+	// One frame, then silence: the server this stands in for would have
+	// heartbeated, so the monitor firing is the correct diagnosis.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	if !strings.Contains(streamErr.Error(), "response.output_text.delta") {
-		t.Errorf("error %q does not name the event type that failed to decode", streamErr)
+
+	clock := &releasableClock{step: idleTimeout}
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, clock.elapsed)
 	}
-	// The sentinel did arrive, so this is not a dropped transport and a caller
-	// must not reconcile as if it were.
-	if errors.Is(streamErr, ErrStreamInterrupted) {
-		t.Error("a fully undecodable stream must not present as an interrupted one")
+
+	var (
+		events    []string
+		streamErr error
+	)
+	for event, err := range client.Stream(t.Context(), "conv_1", StreamOptions{}) {
+		if err != nil {
+			streamErr = err
+			continue
+		}
+		events = append(events, describe(event))
+		// The heartbeat is in the caller's hands, so the transport going quiet
+		// from here is the thing under test rather than a race against delivery.
+		clock.release()
+	}
+
+	if len(events) != 1 || events[0] != "heartbeat" {
+		t.Errorf("events = %v, want the one heartbeat that did arrive", events)
+	}
+	if !errors.Is(streamErr, ErrStreamIdle) {
+		t.Fatalf("stream error = %v, want it to wrap ErrStreamIdle", streamErr)
+	}
+	if errors.Is(streamErr, context.Canceled) {
+		t.Error("an idle timeout must not present as caller cancellation")
+	}
+}
+
+// TestStreamPerCallIdleTimeoutOverridesTheClientDefault pins which of the two
+// timeouts a stream is built with.
+//
+// It reads the value handed to the monitor rather than waiting to see which one
+// expires. That is the property — [StreamOptions.IdleTimeout] outranks
+// [WithStreamIdleTimeout] — and waiting for a firing showed it only by inference,
+// at 150ms a run: an hour failing to elapse is not evidence that the hour was the
+// value this stream discarded.
+func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
+	t.Parallel()
+
+	const perCall = 150 * time.Millisecond
+
+	server := httptest.NewServer(sseHandler("data: [DONE]\n\n"))
+	defer server.Close()
+
+	client, err := New(server.URL, WithStreamIdleTimeout(time.Hour))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var built atomic.Int64
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		built.Store(int64(timeout))
+		return newIdleMonitor(timeout, cancel)
+	}
+
+	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1",
+		StreamOptions{IdleTimeout: perCall})); streamErr != nil {
+		t.Fatalf("stream error = %v, want none", streamErr)
+	}
+
+	if got := time.Duration(built.Load()); got != perCall {
+		t.Errorf("the stream's monitor was built with %s, want the per-call %s: "+
+			"StreamOptions.IdleTimeout outranks WithStreamIdleTimeout", got, perCall)
 	}
 }
 
@@ -507,90 +605,185 @@ func TestStreamRequestShape(t *testing.T) {
 	}
 }
 
-func TestStreamRequiresASessionID(t *testing.T) {
+// TestStreamSkippingEveryFrameIsNotASilentEmptyStream keeps the property that
+// made the Go client better than the reference here: a stream that delivers no
+// event cannot end quietly. Skipping a frame is a degradation, but skipping every
+// frame a stream carried is a failure, and reporting it is what stops a decode
+// failure from being read as an agent that said nothing.
+func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
 	t.Parallel()
 
-	client, err := New("http://example.invalid")
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
-	if streamErr == nil || !strings.Contains(streamErr.Error(), "sessionID is required") {
-		t.Fatalf("stream error = %v, want one naming the missing session id", streamErr)
-	}
-}
-
-func TestStreamIdleTimeout(t *testing.T) {
-	t.Parallel()
-
-	// One frame, then silence: the server that this stands in for would have
-	// heartbeated, so the watchdog firing is the correct diagnosis.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
-		<-r.Context().Done()
-	}))
+	server := httptest.NewServer(sseHandler(
+		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":42}`),
+		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":43}`),
+		"data: [DONE]\n\n",
+	))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(150*time.Millisecond))
+	client, err := New(server.URL)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-
-	started := time.Now()
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
-	elapsed := time.Since(started)
 
-	if len(events) != 1 || events[0] != "heartbeat" {
-		t.Errorf("events = %v, want the one heartbeat that did arrive", events)
+	if len(events) != 0 {
+		t.Errorf("events = %v, want none: neither frame was decodable", events)
 	}
-	if !errors.Is(streamErr, ErrStreamIdle) {
-		t.Fatalf("stream error = %v, want it to wrap ErrStreamIdle", streamErr)
+	if !errors.Is(streamErr, ErrStreamProtocol) {
+		t.Fatalf("stream error = %v, want it to wrap ErrStreamProtocol", streamErr)
 	}
-	if errors.Is(streamErr, context.Canceled) {
-		t.Error("an idle timeout must not present as caller cancellation")
+	if !strings.Contains(streamErr.Error(), "response.output_text.delta") {
+		t.Errorf("error %q does not name the event type that failed to decode", streamErr)
 	}
-	if elapsed > 5*time.Second {
-		t.Errorf("watchdog took %s to fire; it should follow the configured timeout", elapsed)
+	// The sentinel did arrive, so this is not a dropped transport and a caller
+	// must not reconcile as if it were.
+	if errors.Is(streamErr, ErrStreamInterrupted) {
+		t.Error("a fully undecodable stream must not present as an interrupted one")
 	}
 }
 
-func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
+// TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete is P3, stated on
+// a clock the test drives.
+//
+// The monitor was fed once per completed line, so the idle timeout bounded not
+// only silence but the whole transfer of one frame — and this server writes a
+// frame as a single data: line, the snapshot-on-connect one approaching
+// maxFrameBytes. A throttled link therefore reported ErrStreamIdle partway
+// through a perfectly healthy frame. The monitor is fed by bytes arriving
+// instead, so a frame that keeps arriving keeps the stream alive however long it
+// takes.
+//
+// Driven rather than raced. The property is "silence is measured from the last
+// bytes read", and a test that expressed it by sleeping between writes asserted
+// something about the runner's scheduler as much as about the monitor: the
+// original slept 25ms against a 200ms timeout, an 8x margin a loaded CI runner
+// ate often enough to fail the job. Here the clock only moves when this test
+// moves it, so the same answer comes back every run.
+func TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sseHandler(frame("session.heartbeat", `{"type":"session.heartbeat"}`))(w, r)
-		<-r.Context().Done()
-	}))
-	defer server.Close()
+	const timeout = time.Minute
 
-	client, err := New(server.URL, WithStreamIdleTimeout(time.Hour))
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	// Far past the timeout with nothing read: the state a slow frame's transfer
+	// reaches, and the state the old monitor cancelled in.
+	elapsed := timeout * 10
+
+	t.Run("bytes read inside the gap keep the stream alive", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var clock atomic.Int64
+		monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		defer monitor.stop()
+
+		clock.Store(int64(elapsed))
+		reader := &monitoredReader{inner: strings.NewReader("more of the same frame"), monitor: monitor}
+		if _, err := reader.Read(make([]byte, 8)); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+
+		monitor.check()
+
+		if monitor.expired() {
+			t.Error("the monitor reported silence although bytes had just arrived: " +
+				"a frame still being delivered is a slow link, not a dead one")
+		}
+		if ctx.Err() != nil {
+			t.Errorf("the monitor cancelled a stream that was still receiving: %v", ctx.Err())
+		}
+	})
+
+	t.Run("the same gap with nothing read is silence", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var clock atomic.Int64
+		monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		defer monitor.stop()
+
+		// Same clock, same timeout, no read. This is what makes the case above
+		// mean something: the read is the only difference between them.
+		clock.Store(int64(elapsed))
+		monitor.check()
+
+		if !monitor.expired() {
+			t.Error("the monitor did not fire on a transport that delivered nothing")
+		}
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Errorf("ctx error = %v, want context.Canceled", ctx.Err())
+		}
+	})
+}
+
+// TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead pins both halves of the
+// bracket the read loop puts around every call into the caller's code.
+//
+// suspend has to stop the judging, and resume has to re-baseline. Resume's half
+// is easy to lose, because in most tests a read follows immediately and records
+// activity anyway — so the mutation survives everything except a check taken
+// between the resume and the next read, which is what this does.
+func TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead(t *testing.T) {
+	t.Parallel()
+
+	const timeout = time.Minute
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var clock atomic.Int64
+	monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+		return time.Duration(clock.Load())
+	})
+	defer monitor.stop()
+
+	// The caller's handler runs long, and an expiry lands while it does.
+	monitor.suspend()
+	clock.Store(int64(timeout * 10))
+	monitor.check()
+	if monitor.expired() {
+		t.Fatal("the monitor judged a gap it was suspended for: a slow handler is " +
+			"not a silent transport")
 	}
-	opts := StreamOptions{IdleTimeout: 150 * time.Millisecond}
-	if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", opts)); !errors.Is(streamErr, ErrStreamIdle) {
-		t.Fatalf("stream error = %v, want it to wrap ErrStreamIdle", streamErr)
+
+	// The handler returns, and the next expiry lands before any further bytes.
+	monitor.resume()
+	monitor.check()
+	if monitor.expired() {
+		t.Error("the monitor counted the suspended gap once it resumed: resume has " +
+			"to restart the clock, or the handler's time is charged to the transport")
+	}
+	if ctx.Err() != nil {
+		t.Errorf("the monitor cancelled a live stream: %v", ctx.Err())
 	}
 }
 
-// TestStreamSurvivesALargeFrameArrivingSlowly is P3. The watchdog was fed once
-// per completed line, so the idle timeout bounded not only silence but the whole
-// transfer of one frame — and this server writes a frame as a single data: line,
-// the snapshot-on-connect one approaching maxFrameBytes. A throttled link
-// therefore reported ErrStreamIdle partway through a perfectly healthy frame. The
-// watchdog is now fed by bytes arriving, so a frame that keeps arriving keeps the
-// stream alive however long it takes.
+// TestStreamReadsItsBodyThroughTheIdleMonitor is the wiring half.
 //
-// The frame here takes several times the idle timeout to arrive, with no gap
-// within it close to the timeout: a slow link, not a dead one.
-func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
+// [TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete] proves the
+// monitor counts silence from the last bytes read. That only reaches a real
+// stream if [Client.Stream] reads the response body through a [monitoredReader],
+// which is the line a refactor drops silently: every other test still passes,
+// because a stream that is never quiet never needs the monitor.
+//
+// So this counts the readings the monitor takes. Reading through the monitor
+// takes one per Read that delivered bytes, which for a frame written in chunks is
+// many; reading around it takes the one at construction and nothing else. The
+// clock never advances, so no scheduling delay can end this stream — the test
+// says nothing about timing, only about wiring.
+func TestStreamReadsItsBodyThroughTheIdleMonitor(t *testing.T) {
 	t.Parallel()
 
 	const (
-		idleTimeout = 200 * time.Millisecond
-		chunks      = 24
-		chunkSize   = 4 << 10
-		chunkPause  = 25 * time.Millisecond
+		chunks    = 24
+		chunkSize = 4 << 10
 	)
 
 	delta := strings.Repeat("z", chunks*chunkSize)
@@ -603,7 +796,6 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 			`data: {"type":"response.output_text.delta","delta":"`)
 		_ = controller.Flush()
 		for chunk := range chunks {
-			time.Sleep(chunkPause)
 			_, _ = io.WriteString(w, delta[chunk*chunkSize:(chunk+1)*chunkSize])
 			_ = controller.Flush()
 		}
@@ -612,14 +804,25 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
+	client, err := New(server.URL, WithStreamIdleTimeout(time.Hour))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+
+	// A clock that never moves, so the monitor cannot fire whatever the runner
+	// is doing, and every reading it takes is counted.
+	var readings atomic.Int64
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+			readings.Add(1)
+			return 0
+		})
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if streamErr != nil {
-		t.Fatalf("stream error = %v, want none: a frame still arriving is not a silent transport", streamErr)
+		t.Fatalf("stream error = %v, want none", streamErr)
 	}
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want the one frame that was sent", len(events))
@@ -627,14 +830,30 @@ func TestStreamSurvivesALargeFrameArrivingSlowly(t *testing.T) {
 	if want := "delta:" + delta; events[0] != want {
 		t.Errorf("the reassembled frame is %d bytes, want %d", len(events[0]), len(want))
 	}
+	// Two readings come from elsewhere: one at construction, one from the resume
+	// after this stream's single event. A third can only have come from a Read.
+	// The frame is 96 KiB against a 64 KiB scanner buffer, so a body read through
+	// the monitor cannot deliver it in one.
+	if got := readings.Load(); got < 3 {
+		t.Errorf("the monitor took %d clock readings; a body read through it takes "+
+			"one per delivering Read, so this stream is not reading through it at all", got)
+	}
 }
 
-// TestStreamIdleTimeoutFiresMidFrame is the other half of P3: feeding the watchdog
+// TestStreamIdleTimeoutFiresMidFrame is the other half of P3: feeding the monitor
 // on byte progress must not let a half-arrived frame hold it off forever. A frame
 // that stops mid-line and never resumes is a dead transport like any other.
+//
+// The clock is released by the handler rather than by the caller's loop, because
+// there is no event here to hand back — and no rendezvous is needed either way.
+// The outcome is the same whether the truncated bytes were read before the
+// monitor fired or not: no event can be built from half a line.
 func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	t.Parallel()
 
+	const idleTimeout = 20 * time.Millisecond
+
+	clock := &releasableClock{step: idleTimeout}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -643,14 +862,19 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 		_, _ = io.WriteString(w, "event: response.output_text.delta\n"+
 			`data: {"type":"response.output_text.delta","delta":"trunc`)
 		_ = controller.Flush()
+		clock.release()
 		<-r.Context().Done()
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(150*time.Millisecond))
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, clock.elapsed)
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 
 	if len(events) != 0 {
@@ -661,35 +885,65 @@ func TestStreamIdleTimeoutFiresMidFrame(t *testing.T) {
 	}
 }
 
-func TestStreamSurvivesALongToolPauseWithinTheTimeout(t *testing.T) {
+// TestAPauseShorterThanTheTimeoutIsNotSilence is the complement: a tool call can
+// hold a turn open for minutes, and the server's heartbeat is what proves the
+// transport is alive through it.
+//
+// The handler moves the clock, a quarter of the timeout per heartbeat, so three
+// pauses total three quarters of it. Staying under the timeout in aggregate is
+// what makes the result independent of when reads land — HTTP buffering can
+// deliver three writes in one Read, so a test that advanced a full gap per
+// heartbeat would fire or not depending on the transport's buffer size rather
+// than on the monitor.
+//
+// What this does not pin: that arriving bytes are what rearm the monitor. A
+// clock kept under the timeout cannot fire whatever feeds it, and counting the
+// monitor's clock readings does not separate the two either, because resume
+// takes one after every event delivered. That half is
+// [TestABytesArrivingResetTheIdleMonitorWhileALineIsStillIncomplete] and
+// [TestStreamReadsItsBodyThroughTheIdleMonitor]; here the subject is the gap.
+func TestAPauseShorterThanTheTimeoutIsNotSilence(t *testing.T) {
 	t.Parallel()
 
-	// Silence shorter than the timeout is normal: a tool call can hold a turn
-	// open for minutes, and the server's heartbeat is what proves liveness.
+	const (
+		idleTimeout = time.Minute
+		heartbeats  = 3
+		pause       = idleTimeout / 4
+	)
+
+	var clock atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		controller := http.NewResponseController(w)
-		for range 3 {
+		for range heartbeats {
+			clock.Add(int64(pause))
 			_, _ = io.WriteString(w, frame("session.heartbeat", `{"type":"session.heartbeat"}`))
 			_ = controller.Flush()
-			time.Sleep(60 * time.Millisecond)
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		_ = controller.Flush()
 	}))
 	defer server.Close()
 
-	client, err := New(server.URL, WithStreamIdleTimeout(500*time.Millisecond))
+	client, err := New(server.URL, WithStreamIdleTimeout(idleTimeout))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		return newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+	}
+
 	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
 	if streamErr != nil {
-		t.Fatalf("stream error = %v, want none: each frame should rearm the watchdog", streamErr)
+		t.Fatalf("stream error = %v, want none: silence under the timeout is a live "+
+			"transport", streamErr)
 	}
-	if len(events) != 3 {
-		t.Errorf("got %d events, want 3", len(events))
+	if len(events) != heartbeats {
+		t.Errorf("got %d events, want %d", len(events), heartbeats)
 	}
 }
 
@@ -871,39 +1125,39 @@ func settle(t *testing.T) {
 	}
 }
 
-// TestIdleWatchdogIgnoresAnExpiryThatDataBeat is the unit-level statement of the
+// TestIdleMonitorIgnoresAnExpiryThatDataBeat is the unit-level statement of the
 // race: a frame that lands while the timer's callback is already in flight must
 // not be read as silence. Timer.Reset does not un-run a started callback, so the
 // callback has to re-check the clock itself — which is what this drives, by
 // running the expiry hook directly after recording activity.
-func TestIdleWatchdogIgnoresAnExpiryThatDataBeat(t *testing.T) {
+func TestIdleMonitorIgnoresAnExpiryThatDataBeat(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	watchdog := newIdleWatchdog(time.Hour, cancel)
-	defer watchdog.stop()
+	monitor := newIdleMonitor(time.Hour, cancel)
+	defer monitor.stop()
 
-	watchdog.alive()
-	watchdog.check()
+	monitor.alive()
+	monitor.check()
 
-	if watchdog.expired() {
-		t.Error("the watchdog reported an idle stream although a frame had just arrived")
+	if monitor.expired() {
+		t.Error("the monitor reported an idle stream although a frame had just arrived")
 	}
 	if ctx.Err() != nil {
-		t.Errorf("the watchdog cancelled a live stream: %v", ctx.Err())
+		t.Errorf("the monitor cancelled a live stream: %v", ctx.Err())
 	}
 }
 
-// TestIdleWatchdogStillFiresOnRealSilence is the other half: with no activity
+// TestIdleMonitorStillFiresOnRealSilence is the other half: with no activity
 // recorded inside the timeout, the expiry must cancel.
 //
-// It drives the watchdog's clock rather than sleeping, so the condition is
+// It drives the monitor's clock rather than sleeping, so the condition is
 // stated instead of raced: no scheduler, the same answer every run. A wall-clock
 // timeout cannot state it, because time.Now's resolution is coarser than a
 // nanosecond on some platforms and two readings can be equal.
-func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
+func TestIdleMonitorStillFiresOnRealSilence(t *testing.T) {
 	t.Parallel()
 
 	const timeout = time.Minute
@@ -912,31 +1166,31 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 	defer cancel()
 
 	var clock atomic.Int64
-	watchdog := newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	monitor := newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 		return time.Duration(clock.Load())
 	})
-	defer watchdog.stop()
+	defer monitor.stop()
 
 	// Real time passes while the stream's clock does not: an expiry now is the
 	// timer firing early, and must re-arm rather than cancel.
-	watchdog.check()
-	if watchdog.expired() {
-		t.Fatal("the watchdog fired with no time elapsed on the clock it measures")
+	monitor.check()
+	if monitor.expired() {
+		t.Fatal("the monitor fired with no time elapsed on the clock it measures")
 	}
 
 	// Now silence longer than the timeout, and nothing else changed.
 	clock.Store(int64(timeout + 1))
-	watchdog.check()
+	monitor.check()
 
-	if !watchdog.expired() {
-		t.Error("the watchdog did not fire on a stream that was genuinely silent")
+	if !monitor.expired() {
+		t.Error("the monitor did not fire on a stream that was genuinely silent")
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Errorf("ctx error = %v, want context.Canceled", ctx.Err())
 	}
 }
 
-// TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock is S4. alive() stored
+// TestIdleMonitorMeasuresMonotonicTimeNotTheWallClock is S4. alive() stored
 // time.Now().UnixNano() and check() compared it back with
 // time.Since(time.Unix(0, last)) — and time.Unix reconstructs a Time with no
 // monotonic reading, so that comparison is wall clock against wall clock. A clock
@@ -944,38 +1198,55 @@ func TestIdleWatchdogStillFiresOnRealSilence(t *testing.T) {
 // healthy stream or hide a dead one, and a stream has no other liveness control.
 //
 // The check is on what gets recorded, because that is where the wall clock
-// entered: nanoseconds since the watchdog started, not nanoseconds since 1970.
+// entered: nanoseconds since the monitor started, not nanoseconds since 1970.
 // Against feat/go-client-v2 this fails with a recorded value around 1.7e18.
-func TestIdleWatchdogMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
+func TestIdleMonitorMeasuresMonotonicTimeNotTheWallClock(t *testing.T) {
 	t.Parallel()
 
 	_, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	watchdog := newIdleWatchdog(time.Hour, cancel)
-	defer watchdog.stop()
+	monitor := newIdleMonitor(time.Hour, cancel)
+	defer monitor.stop()
 
-	watchdog.alive()
-	recorded := watchdog.last.Load()
+	monitor.alive()
+	recorded := monitor.last.Load()
 	if recorded > int64(time.Minute) {
-		t.Errorf("the watchdog recorded %d ns of elapsed time, which is a wall-clock timestamp "+
+		t.Errorf("the monitor recorded %d ns of elapsed time, which is a wall-clock timestamp "+
 			"rather than a monotonic elapsed reading; a clock adjustment would break liveness detection",
 			recorded)
 	}
 	if recorded < 0 {
-		t.Errorf("the watchdog recorded %d ns, which cannot be elapsed time", recorded)
+		t.Errorf("the monitor recorded %d ns, which cannot be elapsed time", recorded)
 	}
 }
 
-// TestStreamSurvivesASlowHandlerWhileDataFlows is the behavioural statement of
-// the same bug. The caller's handler blocks for several times the idle timeout
-// while the server keeps streaming: the timeout bounds transport silence, so a
-// slow handler must not end the stream, and must certainly not end it with
-// ErrStreamIdle right after events were delivered.
-func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
+// TestASlowHandlerDoesNotCountAsASilentTransport is the behavioural statement of
+// the same bug, on a clock the test drives.
+//
+// The idle timeout bounds transport silence, so a caller's handler blocking for
+// several times the timeout must not end the stream, and must certainly not end
+// it with ErrStreamIdle right after events were delivered. [Client.Stream]
+// brackets every call into the caller's code with suspend and resume for that
+// reason.
+//
+// The handler moves the clock instead of sleeping. That is the whole window under
+// test — the time the read loop spends outside the read — so advancing it there
+// states the condition exactly, where the previous version slept 200ms against a
+// 50ms timeout three times over and spent 600ms of real time asking the scheduler
+// the same question.
+//
+// Calling check from inside the handler is what makes it falsifiable: suspended,
+// the monitor must re-arm without judging the gap at all. Drop the suspend and
+// this cancels the stream on the first event.
+//
+// It does not pin resume's own re-baseline, because the whole response is already
+// buffered here, so the read after the handler records activity anyway. That half
+// is pinned in [TestTheIdleMonitorDoesNotCountTimeSpentOutsideTheRead].
+func TestASlowHandlerDoesNotCountAsASilentTransport(t *testing.T) {
 	t.Parallel()
 
-	const idleTimeout = 50 * time.Millisecond
+	const idleTimeout = time.Minute
 
 	server := httptest.NewServer(sseHandler(
 		frame("session.heartbeat", `{"type":"session.heartbeat"}`),
@@ -991,6 +1262,17 @@ func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
 	}
 
 	var (
+		clock   atomic.Int64
+		monitor *idleMonitor
+	)
+	client.newMonitor = func(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
+		monitor = newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
+			return time.Duration(clock.Load())
+		})
+		return monitor
+	}
+
+	var (
 		events    []string
 		streamErr error
 	)
@@ -1001,8 +1283,9 @@ func TestStreamSurvivesASlowHandlerWhileDataFlows(t *testing.T) {
 		}
 		events = append(events, describe(event))
 		// A handler far slower than the idle timeout, with the whole response
-		// already buffered in the transport.
-		time.Sleep(4 * idleTimeout)
+		// already buffered in the transport, and an expiry landing while it runs.
+		clock.Add(int64(4 * idleTimeout))
+		monitor.check()
 	}
 
 	if streamErr != nil {
@@ -1115,7 +1398,7 @@ func TestStreamMissingSessionIDIsMatchable(t *testing.T) {
 //
 // The idle timeout here is short on purpose: against feat/go-client-v2 this test
 // fails by taking the whole timeout and reporting ErrStreamIdle — the frame was
-// still being accumulated when the watchdog gave up — instead of refusing the
+// still being accumulated when the monitor gave up — instead of refusing the
 // frame the moment it outgrew the limit.
 func TestStreamBoundsTheAccumulatedFrameNotJustOneLine(t *testing.T) {
 	t.Parallel()

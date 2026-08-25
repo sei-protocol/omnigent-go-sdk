@@ -24,7 +24,7 @@ const (
 	// a lifecycle terminal early hands the caller a partial answer it believes is
 	// whole, while waiting for an edge that never comes blocks the read.
 	//
-	// Blocks, not times out. The server's heartbeat keeps the stream's idle watchdog
+	// Blocks, not times out. The server's heartbeat keeps the stream's idle monitor
 	// fed, so the wrong choice here produces no error of its own while the stream
 	// stays up. Give [Chat.Send] a context with a deadline, sized to the longest
 	// turn this agent may legitimately take rather than to an RPC.

@@ -48,7 +48,7 @@ type StreamOptions struct {
 	// OnSubscribed runs once the subscription is live, before the first event
 	// reaches the caller, and is the supported way to post the input that
 	// starts a turn. It runs on the caller's goroutine, so it must return
-	// promptly; the idle watchdog is suspended while it does.
+	// promptly; the idle monitor is suspended while it does.
 	//
 	// It exists because the acknowledgement cannot be recognised by inspecting
 	// events. The server sends the identical {"type": "session.heartbeat"}
@@ -85,7 +85,7 @@ type StreamOptions struct {
 	// [UnknownEvent] and is not an error at all.
 	//
 	// Like [StreamOptions.OnSubscribed] it runs on the caller's goroutine with
-	// the idle watchdog suspended, so it must return promptly. Returning an error
+	// the idle monitor suspended, so it must return promptly. Returning an error
 	// ends the stream with that error wrapped, which is how a caller opts back
 	// into treating an undecodable frame as fatal.
 	//
@@ -185,7 +185,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 			idleTimeout = c.idleTimeout
 		}
 
-		// A derived context lets the idle watchdog end the request without
+		// A derived context lets the idle monitor end the request without
 		// touching the caller's, so the two causes stay distinguishable below.
 		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -204,7 +204,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 		req.Header.Set("Cache-Control", "no-cache")
 
 		// c.stream, not c.unary: a whole-exchange timeout would sever a healthy
-		// stream at the deadline. Liveness is the watchdog's job instead.
+		// stream at the deadline. Liveness is the monitor's job instead.
 		resp, err := c.stream.Do(req)
 		if err != nil {
 			yield(nil, fmt.Errorf("open stream for session %s: %w", sessionID, stripRedirectURL(err)))
@@ -216,16 +216,16 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 			return
 		}
 
-		watchdog := newIdleWatchdog(idleTimeout, cancel)
-		defer watchdog.stop()
+		monitor := c.newMonitor(idleTimeout, cancel)
+		defer monitor.stop()
 
-		// Read through the watchdog, so what feeds it is bytes arriving rather
+		// Read through the monitor, so what feeds it is bytes arriving rather
 		// than lines completing. This server writes a frame as a single data:
 		// line, and the snapshot-on-connect frame is the large one, so a per-line
 		// reset would cap one frame's whole transfer at the idle timeout — a
 		// bound set by how long silence is tolerable, which says nothing about
 		// how long a large frame may legitimately take to arrive.
-		lines := bufio.NewScanner(&watchdogReader{inner: resp.Body, watchdog: watchdog})
+		lines := bufio.NewScanner(&monitoredReader{inner: resp.Body, monitor: monitor})
 		lines.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
 
 		var (
@@ -258,13 +258,13 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 					subscribed = true
 					if opts.OnSubscribed != nil {
 						// ctx, not streamCtx: the hook's own request should fail for
-						// the caller's reason, never the watchdog's.
-						watchdog.suspend()
+						// the caller's reason, never the monitor's.
+						monitor.suspend()
 						hookErr := opts.OnSubscribed(ctx, Subscription{
 							SessionID: sessionID,
 							Idle:      opts.Idle,
 						})
-						watchdog.resume()
+						monitor.resume()
 						if hookErr != nil {
 							yield(nil, fmt.Errorf("stream for session %s: on subscribed: %w",
 								sessionID, hookErr))
@@ -285,14 +285,14 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 						firstSkip = err
 					}
 					if opts.OnSkippedFrame != nil {
-						watchdog.suspend()
+						monitor.suspend()
 						hookErr := opts.OnSkippedFrame(ctx, SkippedFrame{
 							SessionID: sessionID,
 							Name:      frameName,
 							Payload:   framePayload,
 							Err:       err,
 						})
-						watchdog.resume()
+						monitor.resume()
 						if hookErr != nil {
 							yield(nil, fmt.Errorf("stream for session %s: on skipped frame: %w",
 								sessionID, hookErr))
@@ -305,9 +305,9 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 				case event == nil:
 					// An empty frame: nothing to hand a caller.
 				default:
-					watchdog.suspend()
+					monitor.suspend()
 					keepGoing := yield(event, nil)
-					watchdog.resume()
+					monitor.resume()
 					delivered = true
 					if !keepGoing {
 						return
@@ -347,7 +347,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 				sessionID, ErrStreamProtocol, skipped, firstSkip))
 		case sawDone:
 			return
-		case watchdog.expired():
+		case monitor.expired():
 			yield(nil, fmt.Errorf("stream for session %s: %w after %s", sessionID, ErrStreamIdle, idleTimeout))
 		case ctx.Err() != nil:
 			yield(nil, fmt.Errorf("stream for session %s: %w", sessionID, ctx.Err()))
@@ -368,7 +368,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 	}
 }
 
-// idleWatchdog cancels a stream whose transport has gone quiet for longer than
+// idleMonitor cancels a stream whose transport has gone quiet for longer than
 // its timeout.
 //
 // It deliberately does not re-arm a timer per arrival. time.Timer.Reset does not
@@ -381,7 +381,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 // What the timeout bounds is the gap between bytes arriving, not wall-clock time
 // on the stream. Two things make that so: suspend and resume bracket every call
 // out of the read loop, because a slow event handler is not a dead server; and
-// [watchdogReader] records progress per read that delivers bytes, not per
+// [monitoredReader] records progress per read that delivers bytes, not per
 // completed frame, because a large frame arriving slowly is not silence either.
 //
 // It measures that on the monotonic clock, and never on the wall clock. A stream
@@ -390,17 +390,17 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 // cancel a healthy stream or hide a dead one. Storing a wall-clock timestamp and
 // asking time.Since about it later cannot do that: time.Unix reconstructs a Time
 // with no monotonic reading, so the comparison is wall-to-wall.
-type idleWatchdog struct {
+type idleMonitor struct {
 	timeout time.Duration
 	cancel  context.CancelFunc
 
-	// elapsed reports monotonic time since this watchdog was created. It is a
+	// elapsed reports monotonic time since this monitor was created. It is a
 	// field so a test can drive the clock instead of racing it.
 	elapsed func() time.Duration
 
 	// last is the reading of elapsed at the most recent recorded activity.
 	// While paused is set, check re-arms without judging that reading at all.
-	// fired records that the watchdog is what ended the stream; it is stored
+	// fired records that the monitor is what ended the stream; it is stored
 	// before cancel, so the read loop sees it once the read fails.
 	last   atomic.Int64
 	paused atomic.Bool
@@ -413,24 +413,24 @@ type idleWatchdog struct {
 	timer *time.Timer
 }
 
-func newIdleWatchdog(timeout time.Duration, cancel context.CancelFunc) *idleWatchdog {
+func newIdleMonitor(timeout time.Duration, cancel context.CancelFunc) *idleMonitor {
 	// time.Now carries a monotonic reading and time.Since uses it, so every
 	// measurement below is a difference of two monotonic readings.
 	start := time.Now()
-	return newIdleWatchdogWithClock(timeout, cancel, func() time.Duration {
+	return newIdleMonitorWithClock(timeout, cancel, func() time.Duration {
 		return time.Since(start)
 	})
 }
 
-// newIdleWatchdogWithClock is newIdleWatchdog over an explicit clock, so a test
+// newIdleMonitorWithClock is newIdleMonitor over an explicit clock, so a test
 // can state what "the stream has been quiet for longer than the timeout" means
 // instead of sleeping and hoping.
-func newIdleWatchdogWithClock(
+func newIdleMonitorWithClock(
 	timeout time.Duration,
 	cancel context.CancelFunc,
 	elapsed func() time.Duration,
-) *idleWatchdog {
-	w := &idleWatchdog{timeout: timeout, cancel: cancel, elapsed: elapsed}
+) *idleMonitor {
+	w := &idleMonitor{timeout: timeout, cancel: cancel, elapsed: elapsed}
 	w.alive()
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -439,24 +439,24 @@ func newIdleWatchdogWithClock(
 }
 
 // alive records that the transport delivered bytes.
-func (w *idleWatchdog) alive() { w.last.Store(int64(w.elapsed())) }
+func (w *idleMonitor) alive() { w.last.Store(int64(w.elapsed())) }
 
 // suspend stops the clock for as long as the read loop is not reading.
-func (w *idleWatchdog) suspend() { w.paused.Store(true) }
+func (w *idleMonitor) suspend() { w.paused.Store(true) }
 
 // resume restarts the clock from now. Pairs with suspend around every call the
 // read loop makes into the caller's code.
-func (w *idleWatchdog) resume() {
+func (w *idleMonitor) resume() {
 	w.alive()
 	w.paused.Store(false)
 }
 
-// expired reports whether the watchdog is what ended the stream.
-func (w *idleWatchdog) expired() bool { return w.fired.Load() }
+// expired reports whether the monitor is what ended the stream.
+func (w *idleMonitor) expired() bool { return w.fired.Load() }
 
 // check runs on the timer's expiry: cancel if the stream really has been quiet
 // for the whole timeout, otherwise re-arm for the remainder.
-func (w *idleWatchdog) check() {
+func (w *idleMonitor) check() {
 	if w.paused.Load() {
 		w.rearm(w.timeout)
 		return
@@ -470,7 +470,7 @@ func (w *idleWatchdog) check() {
 	w.cancel()
 }
 
-func (w *idleWatchdog) rearm(after time.Duration) {
+func (w *idleMonitor) rearm(after time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.timer != nil {
@@ -479,7 +479,7 @@ func (w *idleWatchdog) rearm(after time.Duration) {
 }
 
 // stop releases the timer. Further expiries cannot re-arm it.
-func (w *idleWatchdog) stop() {
+func (w *idleMonitor) stop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.timer != nil {
@@ -488,7 +488,7 @@ func (w *idleWatchdog) stop() {
 	}
 }
 
-// watchdogReader is an [io.Reader] that records progress on its watchdog for
+// monitoredReader is an [io.Reader] that records progress on its monitor for
 // every read that delivers bytes.
 //
 // It is what makes the idle timeout a bound on silence rather than on how long
@@ -501,15 +501,15 @@ func (w *idleWatchdog) stop() {
 // Progress is progress: a read that returns bytes of any kind counts, comments
 // and unrecognised fields included, because what is being judged here is the
 // transport and not the content.
-type watchdogReader struct {
-	inner    io.Reader
-	watchdog *idleWatchdog
+type monitoredReader struct {
+	inner   io.Reader
+	monitor *idleMonitor
 }
 
-func (r *watchdogReader) Read(p []byte) (int, error) {
+func (r *monitoredReader) Read(p []byte) (int, error) {
 	n, err := r.inner.Read(p)
 	if n > 0 {
-		r.watchdog.alive()
+		r.monitor.alive()
 	}
 	return n, err
 }
