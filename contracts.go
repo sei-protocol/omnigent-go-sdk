@@ -111,6 +111,36 @@ type ElicitationResult struct {
 	Content map[string]any `json:"content,omitempty"`
 }
 
+// userMessage builds the input for one text prompt.
+//
+// The body is a role and a list of content blocks, and one prompt is a single
+// input_text block. input_text, not output_text: the block a caller sends and the
+// block that comes back are different types, and [MessageData.Content] on a reply
+// carries the latter.
+//
+// Empty text sends no block at all, which is what upstream's client does with it.
+//
+// A function rather than a literal inside [Sessions.SendMessage] so the shape has
+// one home. Writing it inline is how it came to be wrong: nothing else in this
+// module states it, so there was nothing to check against.
+//
+// Unexported until something outside needs it. [SessionCreateRequest.InitialItems]
+// takes these directly and no caller seeds one yet, so exporting now would publish
+// a symbol permanently to serve nobody. Promote it when the first one appears.
+func userMessage(text string) SessionEventInput {
+	content := []map[string]any{}
+	if text != "" {
+		content = append(content, map[string]any{"type": "input_text", "text": text})
+	}
+	return SessionEventInput{
+		Type: InputTypeMessage,
+		Data: map[string]any{
+			"role":    MessageDataRoleUser,
+			"content": content,
+		},
+	}
+}
+
 // SessionCreateRequest is the JSON body of session create.
 //
 // Hand-written: the create route takes a raw request and dispatches on

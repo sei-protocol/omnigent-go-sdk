@@ -387,3 +387,70 @@ func TestOfflineRunnerIsNeverChosen(t *testing.T) {
 		t.Errorf("chose %q, which the server reported offline", got)
 	}
 }
+
+// TestASentMessageCarriesTheShapeTheServerPersists pins the body, not the route.
+//
+// The table above asserts the method, the path and the input type, and says
+// nothing about data — which is how this shipped posting {"text": ...} in v0.2.0
+// and v0.2.1. A message input carries a role and a list of content blocks.
+//
+// Three sources agree, which matters because the events route is
+// include_in_schema=False and openapi.json therefore documents no request body:
+// upstream's client builds the same map, this module's own v0.1.2 UserMessage
+// built it too, and MessageData in the description marks role and content
+// required. spec/README.md carries the pinned citation.
+//
+// A separate function rather than a table row: the table compares with != on any,
+// which panics on a map.
+func TestASentMessageCarriesTheShapeTheServerPersists(t *testing.T) {
+	t.Parallel()
+
+	client, got := routeRecorder(t, `{"queued":true,"item_id":"item_1"}`)
+	if _, err := client.Sessions().SendMessage(t.Context(), "conv_1", "review the diff"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	data, ok := got.body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("the input carried no data object: %#v", got.body)
+	}
+	if role, _ := data["role"].(string); role != MessageDataRoleUser {
+		t.Errorf("role = %q, want %q: the server reads the author off the input",
+			role, MessageDataRoleUser)
+	}
+	content, ok := data["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v, want one block: a bare string is not a message body",
+			data["content"])
+	}
+	block, _ := content[0].(map[string]any)
+	if kind, _ := block["type"].(string); kind != "input_text" {
+		t.Errorf("block type = %q, want input_text: output_text is what comes back, "+
+			"not what goes out", kind)
+	}
+	if text, _ := block["text"].(string); text != "review the diff" {
+		t.Errorf("block text = %q, want %q", text, "review the diff")
+	}
+}
+
+// TestAnEmptyPromptSendsNoBlock pins the edge upstream decides, rather than
+// leaving it to fall out of the loop.
+//
+// Upstream appends the block only for a non-empty string, so an empty prompt is a
+// message with no content rather than a block carrying nothing. This package does
+// not reject it: whether an empty prompt means anything is the server's to say,
+// and the other setters that reject an empty string are ones where this package
+// knows the value is required.
+func TestAnEmptyPromptSendsNoBlock(t *testing.T) {
+	t.Parallel()
+
+	client, got := routeRecorder(t, `{"queued":true,"item_id":"item_1"}`)
+	if _, err := client.Sessions().SendMessage(t.Context(), "conv_1", ""); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	data, _ := got.body["data"].(map[string]any)
+	content, ok := data["content"].([]any)
+	if !ok || len(content) != 0 {
+		t.Errorf("content = %#v, want an empty list", data["content"])
+	}
+}

@@ -309,11 +309,11 @@ func (s *Sessions) PostEvent(ctx context.Context, sessionID string, input Sessio
 }
 
 // SendMessage posts a user message and starts a turn.
+//
+// One text block, carrying a role and a content list. A prompt with files or
+// pre-built content blocks is built by hand and posted with [Sessions.PostEvent].
 func (s *Sessions) SendMessage(ctx context.Context, sessionID, text string) (*EventAccepted, error) {
-	return s.PostEvent(ctx, sessionID, SessionEventInput{
-		Type: InputTypeMessage,
-		Data: map[string]any{"text": text},
-	})
+	return s.PostEvent(ctx, sessionID, userMessage(text))
 }
 
 // Interrupt stops the turn in flight, leaving the session usable.
