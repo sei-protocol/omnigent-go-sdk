@@ -133,9 +133,40 @@ type ElicitationCtx struct {
 	Message string
 
 	// Phase and PolicyName are the server's own classification of the request,
-	// empty when it sent none. A caller with a policy keys on these.
+	// empty when it sent none. A caller with a policy keys on these. Unlike
+	// [ElicitationCtx.Extra] their type is enforced by the decoder, so a server
+	// that sends the wrong one loses the whole event rather than the field.
 	Phase      string
 	PolicyName string
+
+	// Extra carries the request's undeclared parameters, nil when it had none.
+	//
+	// The schema allows them and the server uses them. tool_name — the gated
+	// tool's registered name, e.g. "Bash" — arrives here and nowhere else, and it
+	// is the finest-grained thing the server attests about an approval, which
+	// makes it what a policy allowlist keys on: a policy name covers every tool
+	// that policy gates, so allowing one tool by policy name allows the rest.
+	//
+	// Read a value in two steps, because absent and present-but-not-a-string are
+	// different answers and only one of them means the server said nothing:
+	//
+	//	raw, present := ctx.Extra["tool_name"]
+	//	name, valid := raw.(string)
+	//
+	// A single assertion reports both as false and cannot tell them apart, which
+	// is the whole reason this is a map rather than a named field.
+	//
+	// Treat either miss as unknown and fail closed. A declared field's type is
+	// enforced by the decoder and a violation rejects the whole event; nothing
+	// enforces a type here, so a policy that cannot see the tool it is gating
+	// should decline rather than fall through to a broader rule. Present but not
+	// a string is worth logging on its own: the server does not send that shape,
+	// so something else did.
+	//
+	// A map rather than named fields because the set is the server's to change.
+	// Naming one here would make the SDK's opinion about which extra matters
+	// permanent, and would collapse those three answers into an empty string.
+	Extra map[string]any
 
 	// ContentPreview is a preview of what would run, empty when the server sent
 	// none.

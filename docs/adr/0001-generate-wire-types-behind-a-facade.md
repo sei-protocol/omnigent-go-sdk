@@ -70,7 +70,7 @@ decisions the document cannot carry.
   | closed string to `x-go-type: string` | 81 | one wire enum becoming 81 Go types |
   | schema rename | 2 | `McpServerStartup`, `SessionMcpStartupEvent` |
   | `x-go-type: json.RawMessage` | 1 | deferred decode on `ConversationItem.data` |
-  | drop `additionalProperties: true` | 3 | a catch-all field, and a generated marshaller that ignores `omitempty` |
+  | drop `additionalProperties: true` | 2 | a catch-all field, and a generated marshaller that ignores `omitempty` |
 
   Generation also needs `skip-prune: true`, because `oapi-codegen` does not read
   the OAS 3.2 `itemSchema` keyword. Without it the generator cannot reach the
@@ -201,8 +201,21 @@ came from measuring what the review disputed.
   empty non-nil slice marshalled as `[]` where it had been absent. That is a wire
   change on a released module, found by the review's dissenter. The seventh
   transform drops the catch-all, which restores the shape the hand-written types
-  had. Retaining unknown properties is a real improvement and it needs its own
-  change, where someone can fix the marshalling rather than ride it along.
+  had.
+
+  Two of the three, since v0.2.1. Dropping it on `ElicitationRequestParams` lost
+  `tool_name`, which the document does not declare and the server sends among the
+  properties the schema allows — and which a policy allowlist keys on, so the loss
+  read as an allowlist matching nothing rather than as an error. Keeping the
+  catch-all there was the repair, not the divergence: upstream sets `extra="allow"`
+  on that model deliberately, mirroring MCP. The marshalling regression is accepted
+  for that one type, which this package decodes and never encodes, and the extras
+  reach a caller as `ElicitationCtx.Extra` rather than as a named field, so a value
+  that is present and not a string stays distinguishable from an absent one.
+
+  Keeping it also publishes the generated `AdditionalProperties`, `Get`, `Set`,
+  `MarshalJSON` and `UnmarshalJSON` as this module's API, because these types are
+  aliases. Dropping the catch-all again is breaking once a consumer calls `Get`.
 - **The table above overstates what the enum transform first reached.** It
   claims 81 sites; the
   transform as first written matched `enum` only and fired on 21 of them. Every

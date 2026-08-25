@@ -207,12 +207,38 @@ def drop_open_ended_objects(schemas) -> int:
     marshals as `[]` where it used to be absent.
 
     The hand-written types this module shipped declared no catch-all, so
-    dropping it holds the public surface still. Retaining unknown properties is
-    a real improvement and it belongs in its own change, where the marshalling
-    regression can be dealt with rather than ridden along.
+    dropping it holds the public surface still.
+
+    Dropping it is the deviation, not keeping it. The document says these three
+    are open, and upstream means it: their model mirrors MCP's `extra="allow"`
+    on purpose. So the drop is justified only where nothing reads the extras,
+    and `ElicitationRequestParams` is where something does — the server sends
+    `tool_name` there and the document declares no such field. That is the
+    finest-grained thing the server attests on an approval, so losing it
+    silently disables a policy allowlist rather than degrading it.
+
+    Keeping it publishes the generated `AdditionalProperties`, `Get`, `Set`,
+    `MarshalJSON` and `UnmarshalJSON` as this module's API, because the three are
+    aliases. That is the cost, and it is one way: once a consumer calls `Get`,
+    dropping the catch-all again is a breaking change.
+
+    The marshalling regression comes back for that one type: its generated
+    `MarshalJSON` tests a field against nil rather than reading a struct tag, so
+    an empty non-nil `RequestedSchema` marshals as `{}` where `omitempty` would
+    omit it. It is the only collection on the type, and this package decodes
+    these params and never encodes them, so the cost falls on a caller who
+    marshals an inbound event payload back out.
     """
+    keep_catch_all = {"ElicitationRequestParams"}
+    # Named schemas, asserted like every count below: a rename upstream would
+    # otherwise drop the catch-all again and fail 200 lines away, in Go.
+    missing = keep_catch_all - set(schemas)
+    if missing:
+        raise SystemExit(f"keep_catch_all names no such schema: {sorted(missing)}")
     n = 0
-    for schema in schemas.values():
+    for name, schema in schemas.items():
+        if name in keep_catch_all:
+            continue
         if schema.get("additionalProperties") is True:
             del schema["additionalProperties"]
             n += 1
