@@ -740,8 +740,24 @@ func (c *Client) doJSON(
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode %s %s response: %w", method, req.URL.Path, err)
+	return decodeBounded(resp.Body, out, method, req.URL.Path)
+}
+
+// decodeBounded decodes a successful response body under maxResponseBytes.
+//
+// A decode reads until the JSON value ends, so a bound is the only thing that
+// stops a server deciding how much memory a caller spends. The drain in each
+// caller's defer covers pooling and the error path; neither reaches here.
+func decodeBounded(body io.Reader, out any, method, path string) error {
+	// One past the cap, so a body that fills it is distinguishable from one that
+	// ends exactly on it: N reaching zero means the reader had more to give.
+	limited := &io.LimitedReader{R: body, N: maxResponseBytes + 1}
+	if err := json.NewDecoder(limited).Decode(out); err != nil {
+		if limited.N <= 0 {
+			return fmt.Errorf("decode %s %s response: %w: over %d bytes",
+				method, path, ErrResponseTooLarge, maxResponseBytes)
+		}
+		return fmt.Errorf("decode %s %s response: %w", method, path, err)
 	}
 	return nil
 }
@@ -788,10 +804,7 @@ func (c *Client) doUpload(ctx context.Context, segments []string, contentType st
 	if out == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode POST %s response: %w", target.Path, err)
-	}
-	return nil
+	return decodeBounded(resp.Body, out, http.MethodPost, target.Path)
 }
 
 // doDownload copies a response body to w, refusing to write past maxBytes.

@@ -55,8 +55,10 @@ type StreamOptions struct {
 	// payload for two different things — the subscription acknowledgement, and
 	// the keepalive it emits every 15 seconds while a stream sits idle — so
 	// "send when I see a heartbeat" sends again on every keepalive, forever.
-	// This hook is called exactly once per stream, whatever the frames look
-	// like — or not at all, if the stream ends before delivering an event.
+	// This hook is called exactly once per stream, on the first frame of any kind —
+	// a keepalive comment, an empty frame or one this build cannot decode all show
+	// the subscription is live. Not at all only if the stream ends before delivering
+	// any frame, which a caller depending on this hook should give a deadline.
 	// Returning an error ends the stream with that error wrapped.
 	//
 	// Seeding the first turn through a session's initial items avoids
@@ -244,6 +246,33 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 				name = ""
 				payload.Reset()
 				event, done, err := decodeFrame(frameName, framePayload)
+
+				// Any frame proves the relay registered this reader, so the hook
+				// runs here rather than in the decoded-event arm below. A comment
+				// keepalive — which is what a proxy in front of the server emits to
+				// hold the connection open — an empty frame, or one this build
+				// cannot decode all say the subscription is live just as well. A
+				// caller that posts its turn from this hook otherwise never posts at
+				// all, and reports only its own deadline.
+				if !subscribed {
+					subscribed = true
+					if opts.OnSubscribed != nil {
+						// ctx, not streamCtx: the hook's own request should fail for
+						// the caller's reason, never the monitor's.
+						monitor.suspend()
+						hookErr := opts.OnSubscribed(ctx, Subscription{
+							SessionID: sessionID,
+							Idle:      opts.Idle,
+						})
+						monitor.resume()
+						if hookErr != nil {
+							yield(nil, fmt.Errorf("stream for session %s: on subscribed: %w",
+								sessionID, hookErr))
+							return
+						}
+					}
+				}
+
 				switch {
 				case err != nil:
 					// Skipped rather than terminal; see
@@ -276,24 +305,6 @@ func (c *Client) Stream(ctx context.Context, sessionID string, opts StreamOption
 				case event == nil:
 					// An empty frame: nothing to hand a caller.
 				default:
-					if !subscribed {
-						subscribed = true
-						if opts.OnSubscribed != nil {
-							// ctx, not streamCtx: the hook's own request should
-							// fail for the caller's reason, never the
-							// monitor's.
-							monitor.suspend()
-							err := opts.OnSubscribed(ctx, Subscription{
-								SessionID: sessionID,
-								Idle:      opts.Idle,
-							})
-							monitor.resume()
-							if err != nil {
-								yield(nil, fmt.Errorf("stream for session %s: on subscribed: %w", sessionID, err))
-								return
-							}
-						}
-					}
 					monitor.suspend()
 					keepGoing := yield(event, nil)
 					monitor.resume()

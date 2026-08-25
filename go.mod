@@ -8,9 +8,10 @@ module github.com/sei-protocol/omnigent-go-sdk
 //
 // This directive is what narrows who can import the module: a consumer on an
 // older Go cannot build against a higher floor, and `go mod tidy` will not let
-// the line drop below what a dependency declares. There are no dependencies, so
-// the floor is ours alone to justify — and the justification is the consumer, not
-// a language feature. Lower it if a second consumer needs an older Go.
+// the line drop below what a dependency declares. The dependencies below all
+// declare a lower floor than this line, so the floor is still ours to justify —
+// and the justification is the consumer, not a language feature. Lower it if a
+// second consumer needs an older Go, as far as the dependencies allow.
 //
 // No `toolchain` directive, even though the driver carries one. A dependency's
 // toolchain line does not reach its consumers — a consumer under
@@ -18,3 +19,10 @@ module github.com/sei-protocol/omnigent-go-sdk
 // library needs to state. A stdlib advisory is keyed to the toolchain that
 // builds, which a library never controls.
 go 1.25.0
+
+require github.com/oapi-codegen/runtime v1.7.0
+
+require (
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+)

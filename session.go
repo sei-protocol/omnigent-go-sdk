@@ -317,15 +317,34 @@ func (s *Sessions) SendMessage(ctx context.Context, sessionID, text string) (*Ev
 }
 
 // Interrupt stops the turn in flight, leaving the session usable.
+//
+// A server that refuses the interrupt returns [ErrInputDenied]. This is the stop
+// control, so a caller that reads nil has to be able to believe the turn stopped.
 func (s *Sessions) Interrupt(ctx context.Context, sessionID string) error {
-	_, err := s.PostEvent(ctx, sessionID, SessionEventInput{Type: InputTypeInterrupt})
-	return err
+	return s.postControl(ctx, sessionID, InputTypeInterrupt, "interrupt")
 }
 
 // Compact asks the session to compact its context.
+//
+// A server that refuses the compaction returns [ErrInputDenied].
 func (s *Sessions) Compact(ctx context.Context, sessionID string) error {
-	_, err := s.PostEvent(ctx, sessionID, SessionEventInput{Type: InputTypeCompact})
-	return err
+	return s.postControl(ctx, sessionID, InputTypeCompact, "compact")
+}
+
+// postControl posts a control input and reports a refusal as an error.
+//
+// [Sessions.PostEvent] hands a refusal back in the body rather than the status, so
+// a caller reading only the error reads a refused control as a success.
+func (s *Sessions) postControl(ctx context.Context, sessionID, inputType, action string) error {
+	accepted, err := s.PostEvent(ctx, sessionID, SessionEventInput{Type: inputType})
+	if err != nil {
+		return err
+	}
+	if accepted.Denied {
+		return fmt.Errorf("%s: %w: %s", action, ErrInputDenied,
+			sanitizeForError(accepted.Reason, maxErrorFieldRunes))
+	}
+	return nil
 }
 
 // ResolveElicitation answers an approval request the agent raised.

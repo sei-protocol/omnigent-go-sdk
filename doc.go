@@ -12,8 +12,17 @@
 // server's cursor, and [Sessions.ChildrenTree] walks a subtree under bounds the
 // caller sets.
 //
-// There is no turn-loop, transcript-block or tool-dispatch surface. A caller
-// needing those composes them over [Client.Stream] and [Sessions.PostEvent].
+// It also carries the turn loop. [Client.Chat] binds a chat to one session, and
+// [Chat.Send] posts a prompt and reads until the turn ends, running the tools in a
+// [ToolRegistry] and answering the approvals the server raises. [BlockStream] folds those events into the [Block] set a renderer
+// switches over, and the transforms in transform.go drop or merge parts of it.
+//
+// A caller who wants the answer rather than the sequence uses [Chat.Query], which
+// performs that fold and returns the text and the files, or [Chat.QueryStream] to
+// read the text as it arrives.
+//
+// Where a turn ends is a caller's choice, because two harness families put it in
+// different places; see [TurnEnd]. The stricter rule is the default.
 //
 // Building against this package needs Go 1.25 or newer. go.mod declares that
 // floor and CI builds it. The floor tracks the consumer rather than the language
@@ -57,13 +66,18 @@
 // still decodes rather than failing. A switch over those constants therefore
 // needs a default arm.
 //
-// # Hand-authored types
+// # Generated types
 //
-// Every type here is written by hand against spec/openapi.json, a pinned snapshot
-// of the server's OpenAPI document and this package's contract of record. No code
-// generator runs, and none is committed.
+// The wire types come from spec/openapi.json, a pinned snapshot of the server's
+// OpenAPI document and this package's contract of record. bin/generate.sh runs
+// spec/preprocess.py over it and then oapi-codegen, into internal/api. Every
+// type in this package's own files is a one-line declaration over that package,
+// so the field documentation lives in internal/api/api.gen.go and in the
+// document itself, not here. See
+// docs/adr/0001-generate-wire-types-behind-a-facade.md.
 //
-// Tests hold the types to the description: every exported field names a property
+// Tests hold the types to the description: the mapping is complete in both
+// directions, every exported field names a property
 // the description declares, its Go type and optionality match, a container's
 // declared value or element type matches, every declared enum value has a
 // constant, and the decoder's variant set equals the discriminator mapping.
@@ -92,6 +106,51 @@
 //
 // The agent and item listings type their payload as heterogeneous, so
 // [Sessions.ListAgents] and [Sessions.ListItems] narrow it by hand.
+//
+// # Turns
+//
+// A turn is one prompt and the events it produces. [Chat.Send] drives one: it
+// subscribes, posts the prompt, and reads until the turn ends.
+//
+// The prompt is posted from [StreamOptions.OnSubscribed], so the subscription
+// always exists first and the turn cannot be answered with nobody listening. Two
+// consequences a caller can rely on: a stream that fails to open posts nothing, and
+// a [Turn] nobody reads posts nothing. A Turn is single-use for the same reason a
+// second post is not free — it would be a second turn the caller did not ask for,
+// and the server would answer both.
+//
+// Two things run inside the loop, before the turn's end is read, because the server
+// parks a turn on each of them and the terminal event only follows once they are
+// answered: a client tool call, and an approval request. Both are answered even
+// when they fail — an unregistered tool posts an output naming the mismatch rather
+// than leaving the turn parked, and an approval with no decision is declined.
+//
+// Declining is this package's own behaviour and not a policy. It cannot know what a
+// caller would approve, and accepting authorises the pending tool to run with the
+// session owner's execution identity — not the approver's. A caller with a policy
+// supplies [StreamHooks.OnElicitation]; a hook that panics also declines.
+//
+// One obligation is the caller's. A session that may have a response still running
+// needs [TurnOptions.PriorResponseIDs], built from [Sessions.Get] — its
+// [SessionResponse.ActiveResponseID] names the response in flight. Without them a response that predates this turn can end this read, and
+// the caller gets another turn's ending. Give [Chat.Send] a context with a deadline
+// too: [TurnEndsOnIdleStatus] waits for an edge that a mismatched harness never
+// sends, and the stream's heartbeat means no timeout of this package's fires.
+//
+// # What upstream has and this package does not
+//
+// The Python client's public surface is the reference for this one, and two of its
+// symbols are deliberately absent rather than pending. This section states what
+// will not be built.
+//
+// LocalServer starts a server process and waits for it to listen. Managing a
+// server's lifecycle is not a client's job in Go, where a caller already has
+// os/exec and a health check, and a helper that owned a subprocess would own its
+// signals and its logs too.
+//
+// tool is a decorator the server's runtime consumes to load tools inside an agent
+// image. A Go caller registers the client half with [ToolRegistry], which is the
+// part that runs in this process.
 //
 // # Timeouts
 //
@@ -199,6 +258,6 @@
 // routine rather than exceptional — some deployments cap HTTP stream duration at
 // a few minutes.
 //
-// This package does not reach the snapshot route yet; call it directly until the
-// session surface lands.
+// Recover by fetching the snapshot with [Sessions.Get], opening a fresh stream, and
+// deduping the persisted items from [Sessions.ListItems] by id.
 package omnigent
