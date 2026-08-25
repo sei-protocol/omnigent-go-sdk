@@ -382,10 +382,19 @@ func TestStreamSkippedFrameHookCanEndTheStream(t *testing.T) {
 	}
 }
 
-// TestStreamSkippingEveryFrameIsNotASilentEmptyStream keeps the property that
-// made the Go client better than the reference here: a stream that delivers no
-// event cannot end quietly. Skipping a frame is a degradation, but skipping every
-// frame a stream carried is a failure, and reporting it is what stops a decode
+func TestStreamRequiresASessionID(t *testing.T) {
+	t.Parallel()
+
+	client, err := New("http://example.invalid")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, streamErr := collect(t, client.Stream(t.Context(), "", StreamOptions{}))
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "sessionID is required") {
+		t.Fatalf("stream error = %v, want one naming the missing session id", streamErr)
+	}
+}
+
 // releasableClock is a clock that reads zero until the test releases it, and then
 // runs away.
 //
@@ -505,6 +514,131 @@ func TestStreamPerCallIdleTimeoutOverridesTheClientDefault(t *testing.T) {
 	if got := time.Duration(built.Load()); got != perCall {
 		t.Errorf("the stream's watchdog was built with %s, want the per-call %s: "+
 			"StreamOptions.IdleTimeout outranks WithStreamIdleTimeout", got, perCall)
+	}
+}
+
+func TestStreamRejectedSubscription(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"absent or invisible", http.StatusNotFound, `{"error":{"code":"not_found","message":"gone"}}`, ErrNotFound},
+		{"unauthenticated", http.StatusUnauthorized, `{"detail":"unauthorized"}`, ErrUnauthorized},
+		{"read access missing", http.StatusForbidden, `{"detail":"forbidden"}`, ErrForbidden},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
+			if len(events) != 0 {
+				t.Errorf("got events %v, want none", events)
+			}
+			if !errors.Is(streamErr, tc.want) {
+				t.Fatalf("stream error = %v, want it to wrap %v", streamErr, tc.want)
+			}
+			var apiErr *APIError
+			if !errors.As(streamErr, &apiErr) {
+				t.Fatalf("stream error %v does not unwrap to *APIError", streamErr)
+			}
+		})
+	}
+}
+
+func TestStreamRequestShape(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		opts      StreamOptions
+		wantQuery string
+	}{
+		{name: "attentive subscriber sends no idle flag"},
+		{name: "idle subscriber declares itself", opts: StreamOptions{Idle: true}, wantQuery: "idle=true"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			requests := make(chan *http.Request, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r.Clone(r.Context())
+				sseHandler("data: [DONE]\n\n")(w, r)
+			}))
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if _, streamErr := collect(t, client.Stream(t.Context(), "conv_1", tc.opts)); streamErr != nil {
+				t.Fatalf("stream: %v", streamErr)
+			}
+			got := <-requests
+			if got.URL.EscapedPath() != "/v1/sessions/conv_1/stream" {
+				t.Errorf("path = %q, want /v1/sessions/conv_1/stream", got.URL.EscapedPath())
+			}
+			if got.URL.RawQuery != tc.wantQuery {
+				t.Errorf("query = %q, want %q", got.URL.RawQuery, tc.wantQuery)
+			}
+			if accept := got.Header.Get("Accept"); accept != "text/event-stream" {
+				t.Errorf("Accept = %q, want text/event-stream", accept)
+			}
+		})
+	}
+}
+
+// TestStreamSkippingEveryFrameIsNotASilentEmptyStream keeps the property that
+// made the Go client better than the reference here: a stream that delivers no
+// event cannot end quietly. Skipping a frame is a degradation, but skipping every
+// frame a stream carried is a failure, and reporting it is what stops a decode
+// failure from being read as an agent that said nothing.
+func TestStreamSkippingEveryFrameIsNotASilentEmptyStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(sseHandler(
+		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":42}`),
+		frame("response.output_text.delta", `{"type":"response.output_text.delta","delta":43}`),
+		"data: [DONE]\n\n",
+	))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	events, streamErr := collect(t, client.Stream(t.Context(), "conv_1", StreamOptions{}))
+
+	if len(events) != 0 {
+		t.Errorf("events = %v, want none: neither frame was decodable", events)
+	}
+	if !errors.Is(streamErr, ErrStreamProtocol) {
+		t.Fatalf("stream error = %v, want it to wrap ErrStreamProtocol", streamErr)
+	}
+	if !strings.Contains(streamErr.Error(), "response.output_text.delta") {
+		t.Errorf("error %q does not name the event type that failed to decode", streamErr)
+	}
+	// The sentinel did arrive, so this is not a dropped transport and a caller
+	// must not reconcile as if it were.
+	if errors.Is(streamErr, ErrStreamInterrupted) {
+		t.Error("a fully undecodable stream must not present as an interrupted one")
 	}
 }
 
