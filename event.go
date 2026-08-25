@@ -39,12 +39,14 @@ import (
 //
 // Five things about the stream shape are easy to get wrong:
 //
-// [ResponseCreatedEvent] never arrives on a live turn. The harness emits
-// "response.created" and "response.in_progress" as an inseparable pair, and the
-// server drops the created half at the publish chokepoint that feeds every
-// subscriber — so a subscription sees the in_progress half alone and no created
-// at all. That asymmetry is the design, not a dropped frame; take in_progress,
-// never created, as an in-process turn's opening event.
+// [ResponseCreatedEvent] never arrives on a live turn. The harness emits it paired
+// with "response.in_progress", and the server drops the created half before the
+// bus every subscriber reads. Take in_progress as an in-process turn's opening
+// event.
+//
+// The generated description on InProgressEvent says the opposite — "always follows
+// response.created". It describes the per-response harness stream, where the pair
+// is emitted; this package reads the session stream, downstream of the drop.
 //
 // Every stream opens with a fixed prologue, on every connect. First a
 // [SessionHeartbeatEvent], which is the subscription acknowledgement — but note
@@ -117,7 +119,12 @@ type Event interface {
 	// [UnknownEvent] it is the discriminator this build did not recognise.
 	EventType() string
 
-	// isEvent seals the union: only this package can add a variant.
+	// isEvent seals the union, so a variant comes from this package.
+	//
+	// Precisely: a type declaring its own isEvent does not satisfy Event, because
+	// the method is unexported and identity includes the declaring package. A type
+	// embedding an exported variant does satisfy it, promoting this method with
+	// the rest — so this is a strong convention, not a proof.
 	//
 	// The pattern is go/ast's, where Node carries the real methods and Expr, Stmt
 	// and Decl each add an unexported marker — 50 implementations in one file. The

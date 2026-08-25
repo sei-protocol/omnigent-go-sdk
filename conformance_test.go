@@ -376,14 +376,11 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	schemas := loadSpec(t)
 	types := mirroredTypes(t)
 
-	// Resolve a declared $ref to the Go type mirroring it, under both spellings:
-	// schemaFor's key is the Go name and its value is the description's own.
+	// Resolve a declared $ref to the Go type mirroring it, under both spellings.
 	schemaTypes := make(map[string]reflect.Type, len(types)*2)
 	for goName, rt := range types {
 		schemaTypes[goName] = rt
-		if schemaName := schemaFor(goName); true {
-			schemaTypes[schemaName] = rt
-		}
+		schemaTypes[schemaFor(goName)] = rt
 	}
 
 	names := make([]string, 0, len(types))
