@@ -3,14 +3,15 @@ name: Diag Claude Auth
 # "full output hidden for security". Delete this file and the branch once the
 # question is answered.
 on:
-  push:
-    branches: [ diag/claude-auth ]
+  pull_request:
+    branches: [ main ]
 jobs:
   diag:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
