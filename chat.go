@@ -577,6 +577,7 @@ func elicitationCtxOf(fallbackSession, responseID string, e ElicitationRequestEv
 		ElicitationID:   e.ElicitationID,
 		Message:         e.Params.Message,
 		RequestedSchema: e.Params.RequestedSchema,
+		Extra:           e.Params.AdditionalProperties,
 		ResponseID:      responseID,
 	}
 	if e.Params.Mode != nil {

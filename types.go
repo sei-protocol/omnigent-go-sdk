@@ -7,6 +7,10 @@ import "github.com/sei-protocol/omnigent-go-sdk/internal/api"
 type ConversationRef = api.ConversationRef
 
 // ElicitationRequestParams is the inner params block of a ElicitationRequestEvent.
+//
+// It retains the properties the document does not declare, which is where the
+// server sends tool_name. Reading them is supported; [ElicitationCtx.Extra] is
+// the same map, handed to an approval hook.
 type ElicitationRequestParams = api.ElicitationRequestParams
 
 // ErrorDetail is machine-readable error information attached to a failed response.

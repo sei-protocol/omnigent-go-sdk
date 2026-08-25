@@ -6,6 +6,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -569,7 +570,8 @@ type ElicitationRequestParams struct {
 	TargetSessionID *string `json:"target_session_id,omitempty"`
 
 	// URL External URL for url mode (or `None` for form mode), e.g. `"https://oauth.example.com/authorize?..."`.
-	URL *string `json:"url,omitempty"`
+	URL                  *string                `json:"url,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // ElicitationResolvedEvent Signal that a previously-published elicitation is no longer
@@ -3061,6 +3063,177 @@ type ForkSessionV1SessionsSourceIDForkPostJSONRequestBody = SessionForkRequest
 
 // SetSharingV1SharingPutJSONRequestBody defines body for SetSharingV1SharingPut for application/json ContentType.
 type SetSharingV1SharingPutJSONRequestBody = SetSharingRequest
+
+// Getter for additional properties for ElicitationRequestParams. Returns the specified
+// element and whether it was found
+func (a ElicitationRequestParams) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ElicitationRequestParams
+func (a *ElicitationRequestParams) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ElicitationRequestParams to handle AdditionalProperties
+func (a *ElicitationRequestParams) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["content_preview"]; found {
+		err = json.Unmarshal(raw, &a.ContentPreview)
+		if err != nil {
+			return fmt.Errorf("error reading 'content_preview': %w", err)
+		}
+		delete(object, "content_preview")
+	}
+
+	if raw, found := object["message"]; found {
+		err = json.Unmarshal(raw, &a.Message)
+		if err != nil {
+			return fmt.Errorf("error reading 'message': %w", err)
+		}
+		delete(object, "message")
+	}
+
+	if raw, found := object["mode"]; found {
+		err = json.Unmarshal(raw, &a.Mode)
+		if err != nil {
+			return fmt.Errorf("error reading 'mode': %w", err)
+		}
+		delete(object, "mode")
+	}
+
+	if raw, found := object["phase"]; found {
+		err = json.Unmarshal(raw, &a.Phase)
+		if err != nil {
+			return fmt.Errorf("error reading 'phase': %w", err)
+		}
+		delete(object, "phase")
+	}
+
+	if raw, found := object["policy_name"]; found {
+		err = json.Unmarshal(raw, &a.PolicyName)
+		if err != nil {
+			return fmt.Errorf("error reading 'policy_name': %w", err)
+		}
+		delete(object, "policy_name")
+	}
+
+	if raw, found := object["requestedSchema"]; found {
+		err = json.Unmarshal(raw, &a.RequestedSchema)
+		if err != nil {
+			return fmt.Errorf("error reading 'requestedSchema': %w", err)
+		}
+		delete(object, "requestedSchema")
+	}
+
+	if raw, found := object["target_session_id"]; found {
+		err = json.Unmarshal(raw, &a.TargetSessionID)
+		if err != nil {
+			return fmt.Errorf("error reading 'target_session_id': %w", err)
+		}
+		delete(object, "target_session_id")
+	}
+
+	if raw, found := object["url"]; found {
+		err = json.Unmarshal(raw, &a.URL)
+		if err != nil {
+			return fmt.Errorf("error reading 'url': %w", err)
+		}
+		delete(object, "url")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ElicitationRequestParams to handle AdditionalProperties
+func (a ElicitationRequestParams) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.ContentPreview != nil {
+		object["content_preview"], err = json.Marshal(a.ContentPreview)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'content_preview': %w", err)
+		}
+	}
+
+	object["message"], err = json.Marshal(a.Message)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'message': %w", err)
+	}
+
+	if a.Mode != nil {
+		object["mode"], err = json.Marshal(a.Mode)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'mode': %w", err)
+		}
+	}
+
+	if a.Phase != nil {
+		object["phase"], err = json.Marshal(a.Phase)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'phase': %w", err)
+		}
+	}
+
+	if a.PolicyName != nil {
+		object["policy_name"], err = json.Marshal(a.PolicyName)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'policy_name': %w", err)
+		}
+	}
+
+	if a.RequestedSchema != nil {
+		object["requestedSchema"], err = json.Marshal(a.RequestedSchema)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'requestedSchema': %w", err)
+		}
+	}
+
+	if a.TargetSessionID != nil {
+		object["target_session_id"], err = json.Marshal(a.TargetSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'target_session_id': %w", err)
+		}
+	}
+
+	if a.URL != nil {
+		object["url"], err = json.Marshal(a.URL)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'url': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // AsSessionStatusEvent returns the union data inside the ServerStreamEvent as a SessionStatusEvent
 func (t ServerStreamEvent) AsSessionStatusEvent() (SessionStatusEvent, error) {

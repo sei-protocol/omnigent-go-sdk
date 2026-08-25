@@ -1004,3 +1004,71 @@ func TestAServerRunToolIsNeverDispatched(t *testing.T) {
 		})
 	}
 }
+
+// TestAnApprovalCarriesTheParamsTheDocumentDoesNotDeclare pins that undeclared
+// params reach the hook, and that a caller can tell the three answers apart.
+//
+// The document declares message, mode, phase, policy_name, requestedSchema,
+// target_session_id and url, and not tool_name — the server sends it among the
+// additional properties the schema allows, mirroring MCP. It is the
+// finest-grained field the server attests here, so a policy allowlist keys on it.
+//
+// The three cases are one test because the middle one is why this is a map. A
+// named string field reports absent and present-but-not-a-string identically, and
+// a denylist reads that empty as "no match" and approves — so the shape decides
+// whether a hostile value fails open.
+func TestAnApprovalCarriesTheParamsTheDocumentDoesNotDeclare(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name      string
+		params    string
+		wantName  string
+		wantOK    bool
+		wantThere bool
+	}{
+		{"a string the policy can match", `"tool_name":"Bash"`, "Bash", true, true},
+		{"absent, so the server said nothing", `"phase":"pre_tool_use"`, "", false, false},
+		{"present and not a string, which is not the same as absent",
+			`"tool_name":{"nested":1}`, "", false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, client := newChatServer(t, nil, []string{
+				echoFrame,
+				`{"type":"response.elicitation_request","elicitation_id":"el_1",` +
+					`"params":{"message":"run rm -rf /tmp/cache?","policy_name":"approve_shell",` +
+					c.params + `}}`,
+				`{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`,
+			})
+
+			var seen ElicitationCtx
+			chat, err := client.Chat("conv_1", ChatOptions{
+				Turn:  TurnOptions{End: TurnEndsOnResponseLifecycle},
+				Hooks: StreamHooks{OnElicitation: func(e ElicitationCtx) bool { seen = e; return false }},
+			})
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			for range chat.Send(ctx, "hi") {
+			}
+
+			_, present := seen.Extra["tool_name"]
+			if present != c.wantThere {
+				t.Errorf("Extra[tool_name] present = %v, want %v", present, c.wantThere)
+			}
+			name, ok := seen.Extra["tool_name"].(string)
+			if ok != c.wantOK || name != c.wantName {
+				t.Errorf("assertion gave (%q, %v), want (%q, %v)", name, ok, c.wantName, c.wantOK)
+			}
+			// The declared fields still arrive, so keeping the catch-all did not
+			// displace them.
+			if seen.PolicyName != "approve_shell" {
+				t.Errorf("PolicyName = %q, want the declared field intact", seen.PolicyName)
+			}
+		})
+	}
+}
