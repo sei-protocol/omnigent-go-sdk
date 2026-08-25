@@ -27,6 +27,10 @@ jobs:
       - name: Run claude-code-action with output shown
         uses: anthropics/claude-code-action@v1
         with:
+          # uci passes the seidroid app token here. Without it the action falls back
+          # to the public Claude Code app and fails on its install check, which is a
+          # property of this diagnostic rather than of the real path.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_federation_rule_id: ${{ vars.PLATFORM_CODE_AGENT_ANTHROPIC_FDRL_ID }}
           anthropic_organization_id: ${{ vars.SEI_LABS_ANTHROPIC_ORG_ID }}
           anthropic_service_account_id: ${{ vars.PLATFORM_CODE_AGENT_ANTHROPIC_SVAC_ID }}
