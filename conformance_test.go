@@ -6,10 +6,12 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,33 +29,75 @@ import (
 // package omits passes, deliberately: the surface is meant to be smaller than the
 // document, not equal to it.
 
-// schemaExceptions holds the types whose Go name differs from their schema name.
+// schemaFor names the spec schema each exported type mirrors.
 //
-// Two differ because Go writes an initialism in capitals and the description does
-// not. Five differ because this package prefixes a response event the description
-// leaves bare, so [ResponseCompletedEvent] does not collide with
-// [TurnCompletedEvent].
+// Derived, not written. Every mirrored type is declared over one in internal/api
+// as `type X = api.Y` or `type X api.Y`, so Y is the schema name and the
+// declaration is the mapping. A hand-written table said the same thing in 94
+// rows, 87 of which mapped a name to itself, and went stale on every rename.
 //
-// Everything else matches, so nothing else is listed. A name absent here is its
-// own schema name, and a name that resolves to no schema fails in
-// [declaredProperties], which is where the consequence is: the field, type and
-// enum checks all read the schema this resolves to.
-var schemaExceptions = map[string]string{
+// A type absent from the result is not checked, so [TestEveryMirroredTypeIsMapped]
+// holds the event half to the decoder's own registry: a variant the decoder knows
+// and this map does not is a failure, not a silent skip.
+var schemaFor = sync.OnceValue(derivedSchemaFor)
+
+// schemaRenames undoes the schema renames spec/preprocess.py applies.
+//
+// Two schemas are generated under a different name than the document gives them,
+// because Go spells an initialism in capitals and the document does not. These
+// tests read spec/openapi.json rather than the prepared copy, so they need the
+// document's spelling. Keep this in step with rename_schemas in
+// spec/preprocess.py; TestEverySchemaRenameIsReal fails when an entry stops
+// matching the document.
+var schemaRenames = map[string]string{
 	"MCPServerStartup":       "McpServerStartup",
-	"ResponseCancelledEvent": "CancelledEvent",
-	"ResponseCompletedEvent": "CompletedEvent",
-	"ResponseCreatedEvent":   "CreatedEvent",
-	"ResponseFailedEvent":    "FailedEvent",
-	"ResponseHeartbeatEvent": "HeartbeatEvent",
 	"SessionMCPStartupEvent": "SessionMcpStartupEvent",
 }
 
-// schemaFor returns the schema name a mirrored type reflects.
-func schemaFor(goName string) string {
-	if schema, exceptional := schemaExceptions[goName]; exceptional {
-		return schema
+// derivedSchemaFor reads the package's own declarations for their api targets.
+func derivedSchemaFor() map[string]string {
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		panic("glob: " + err.Error())
 	}
-	return goName
+
+	out := map[string]string{}
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			panic("parse " + path + ": " + err.Error())
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				sel, ok := ts.Type.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok || pkg.Name != "api" {
+					continue
+				}
+				schema := sel.Sel.Name
+				if original, renamed := schemaRenames[schema]; renamed {
+					schema = original
+				}
+				out[ts.Name.Name] = schema
+			}
+		}
+	}
+	return out
 }
 
 // loadSpec reads the vendored description once per test.
@@ -142,7 +186,9 @@ func mirroredTypes(t *testing.T) map[string]reflect.Type {
 }
 
 // surfaceRoots are the types the session and file routes return or accept, one
-// zero value each.
+// zero value each. [TestEveryMappedTypeIsReachable] fails when schemaFor names a
+// type no root here reaches, which is the only thing standing between a mapped
+// type and silent non-coverage.
 var surfaceRoots = []any{
 	SessionResponse{},
 	SessionList{},
@@ -188,6 +234,30 @@ func wireName(field reflect.StructField) (string, bool) {
 	return name, name != ""
 }
 
+// TestEveryMappedTypeIsReachable is the inverse of
+// [TestEveryMirroredTypeIsMapped], and the two together are what make schemaFor
+// mean coverage. Without it an entry can name a schema for a type nothing walks,
+// and the field, type and enum checks all skip it in silence.
+func TestEveryMappedTypeIsReachable(t *testing.T) {
+	reached := mirroredTypes(t)
+	for goName := range schemaFor() {
+		if _, ok := reached[goName]; !ok {
+			t.Errorf("schemaFor names %s, but no root reaches it, so nothing checks its fields", goName)
+		}
+	}
+}
+
+// TestEveryMirroredTypeIsMapped fails when a type reachable from the decoder has
+// no entry in [schemaFor]. Without it, adding an event variant would silently
+// skip the field check for that variant.
+func TestEveryMirroredTypeIsMapped(t *testing.T) {
+	for name := range mirroredTypes(t) {
+		if _, ok := schemaFor()[name]; !ok {
+			t.Errorf("%s is reachable from the decoder but names no spec schema; add it to schemaFor", name)
+		}
+	}
+}
+
 // TestEveryDeclaredFieldExistsInTheSpec is the direction that can hurt a caller.
 // A field this package declares that the server does not is a promise nothing
 // keeps.
@@ -202,7 +272,10 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName := schemaFor(goName)
+		schemaName, mapped := schemaFor()[goName]
+		if !mapped {
+			continue // TestEveryMirroredTypeIsMapped owns this failure
+		}
 		declared := declaredProperties(t, schemas, schemaName)
 		rt := types[goName]
 		for i := range rt.NumField() {
@@ -219,9 +292,18 @@ func TestEveryDeclaredFieldExistsInTheSpec(t *testing.T) {
 	}
 }
 
-// TestEveryUnionMemberIsRegistered pins the registry against the spec's own
-// discriminator mapping, so a variant the server publishes and this package does
-// not know is visible here rather than as an UnknownEvent in production.
+// TestEveryUnionMemberIsRegistered pins the direction the field checks cannot
+// cover: that this package reaches every event the document declares.
+//
+// The other conformance tests read a Go type and ask what the document says
+// about it, so a schema nothing declares is a schema nothing checks. That is how
+// a new event variant arrives unnoticed: the spec gains one, the suite stays
+// green, and a caller receives it as [UnknownEvent] with no signal that a typed
+// variant was available.
+//
+// This runs against the vendored document, so it catches a spec refresh that
+// nobody regenerated for. It cannot catch the vendored copy itself going stale
+// against the server, which needs the network and lives outside `go test`.
 func TestEveryUnionMemberIsRegistered(t *testing.T) {
 	raw, err := os.ReadFile("spec/openapi.json")
 	if err != nil {
@@ -380,7 +462,9 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	schemaTypes := make(map[string]reflect.Type, len(types)*2)
 	for goName, rt := range types {
 		schemaTypes[goName] = rt
-		schemaTypes[schemaFor(goName)] = rt
+		if schemaName, ok := schemaFor()[goName]; ok {
+			schemaTypes[schemaName] = rt
+		}
 	}
 
 	names := make([]string, 0, len(types))
@@ -390,7 +474,10 @@ func TestEveryDeclaredFieldMatchesItsSchemaType(t *testing.T) {
 	slices.Sort(names)
 
 	for _, goName := range names {
-		schemaName := schemaFor(goName)
+		schemaName, mapped := schemaFor()[goName]
+		if !mapped {
+			continue // TestEveryMirroredTypeIsMapped owns this failure
+		}
 		node, ok := schemas[schemaName].(map[string]any)
 		if !ok {
 			continue // declaredProperties reports a missing schema
@@ -475,8 +562,7 @@ func TestEveryDeclaredEnumValueHasAConstant(t *testing.T) {
 	constants := declaredConstants(t)
 	declared := 0
 
-	for goName := range mirroredTypes(t) {
-		schemaName := schemaFor(goName)
+	for goName, schemaName := range schemaFor() {
 		node, ok := schemas[schemaName].(map[string]any)
 		if !ok {
 			continue
@@ -581,4 +667,166 @@ func goFieldName(wire string) string {
 		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
 	}
 	return b.String()
+}
+
+// TestSchemaForIsDerivedFromDeclarations pins that the derivation found the
+// declarations, so an empty result cannot pass as an empty obligation.
+//
+// Every check keyed on [schemaFor] iterates it, so a derivation that silently
+// returned nothing would turn the whole conformance suite green while checking
+// no type at all. The floor is the guard against that, not a count worth
+// maintaining: raise it only if it starts obstructing a real removal.
+func TestSchemaForIsDerivedFromDeclarations(t *testing.T) {
+	t.Parallel()
+
+	const floor = 80
+	derived := schemaFor()
+	if len(derived) < floor {
+		t.Fatalf("derived %d type-to-schema pairs, want at least %d; the AST scan is not "+
+			"reading the declarations", len(derived), floor)
+	}
+	// A type declared over api must resolve to a schema the document declares,
+	// or the pair is noise rather than a mapping.
+	schemas := schemaNames(t)
+	for goName, schema := range derived {
+		if !schemas[schema] {
+			t.Errorf("%s is declared over api.%s, which the document does not declare; "+
+				"either the generated name diverges or schemaRenames needs an entry",
+				goName, schema)
+		}
+	}
+}
+
+// TestEverySchemaRenameIsReal pins that spec/preprocess.py's renames still
+// describe the document.
+//
+// [schemaRenames] exists to undo two renames applied before generation. Once the
+// document spells one of them the Go way, or drops it, the entry stops
+// describing anything and quietly stops mapping the type it was written for.
+func TestEverySchemaRenameIsReal(t *testing.T) {
+	t.Parallel()
+
+	schemas := schemaNames(t)
+	for generated, original := range schemaRenames {
+		if !schemas[original] {
+			t.Errorf("schemaRenames maps %s back to %s, which the document does not declare; "+
+				"drop the entry, or match the rename in spec/preprocess.py", generated, original)
+		}
+		if schemas[generated] {
+			t.Errorf("schemaRenames maps %s back to %s, but the document declares %s itself, "+
+				"so the rename is no longer needed", generated, original, generated)
+		}
+	}
+}
+
+// schemaNames returns the set of schema names spec/openapi.json declares.
+func schemaNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	raw, err := os.ReadFile("spec/openapi.json")
+	if err != nil {
+		t.Fatalf("read spec: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode spec: %v", err)
+	}
+	if len(doc.Components.Schemas) < 100 {
+		t.Fatalf("found only %d schemas; the extraction is broken", len(doc.Components.Schemas))
+	}
+
+	names := make(map[string]bool, len(doc.Components.Schemas))
+	for name := range doc.Components.Schemas {
+		names[name] = true
+	}
+	return names
+}
+
+// TestNoEventTargetCarriesAMethod pins the invariant the event union's shape
+// depends on and nothing else states.
+//
+// An event variant is a defined type over its generated counterpart, not an
+// alias, because Go refuses a method on another package's type and each variant
+// carries [Event]'s two methods. A defined type does not inherit the underlying
+// type's method set. That costs nothing while no generated event type has a
+// method, which is true today and is not a property of the document.
+//
+// Give an event schema `additionalProperties` upstream and the generator emits
+// an UnmarshalJSON for it. The defined type would not call it, [DecodeEvent]
+// would drop the properties it collects, and no field-level check would notice,
+// because the fields still match. So assert the premise rather than the effect.
+func TestNoEventTargetCarriesAMethod(t *testing.T) {
+	t.Parallel()
+
+	const generated = "internal/api/api.gen.go"
+	file, err := parser.ParseFile(token.NewFileSet(), generated, nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile %s: %v", generated, err)
+	}
+
+	withMethods := map[string]bool{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		recv := fn.Recv.List[0].Type
+		if star, ok := recv.(*ast.StarExpr); ok {
+			recv = star.X
+		}
+		if id, ok := recv.(*ast.Ident); ok {
+			withMethods[id.Name] = true
+		}
+	}
+
+	// The event variants, and the api type each is defined over.
+	targets := definedEventTargets(t)
+	if len(targets) < 40 {
+		t.Fatalf("found only %d event variants defined over api; the scan is broken", len(targets))
+	}
+	for local, target := range targets {
+		if withMethods[target] {
+			t.Errorf("%s is a defined type over api.%s, which now carries a method that "+
+				"%s does not inherit; make it an alias, or move the behaviour into the facade",
+				local, target, local)
+		}
+	}
+}
+
+// definedEventTargets returns each event variant declared as `type X api.Y`,
+// mapped to Y. An alias is excluded: it shares the method set, so the invariant
+// above does not apply to it.
+func definedEventTargets(t *testing.T) map[string]string {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "event.go", nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile event.go: %v", err)
+	}
+
+	out := map[string]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Assign.IsValid() {
+				continue // Assign set means `=`, an alias.
+			}
+			sel, ok := ts.Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "api" {
+				out[ts.Name.Name] = sel.Sel.Name
+			}
+		}
+	}
+	return out
 }

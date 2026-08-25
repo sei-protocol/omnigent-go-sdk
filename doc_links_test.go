@@ -57,7 +57,7 @@ func TestEveryDocLinkResolves(t *testing.T) {
 		files = append(files, file)
 	}
 
-	names, members, isType := declaredIdentifiers(files)
+	names, members, isType := declaredIdentifiers(files, generatedFields(t))
 
 	for _, file := range files {
 		for _, group := range file.Comments {
@@ -72,9 +72,55 @@ func TestEveryDocLinkResolves(t *testing.T) {
 	}
 }
 
+// generatedFields indexes the fields of every struct in internal/api, keyed by
+// type name.
+//
+// A public type in this package is a one-line alias or defined type over one of
+// those, so its fields are declared in the generated file rather than here. A
+// scan of this package alone sees the name and none of the members, and reports
+// every member link as dangling.
+func generatedFields(t *testing.T) map[string][]string {
+	t.Helper()
+
+	const generated = "internal/api/api.gen.go"
+	file, err := parser.ParseFile(token.NewFileSet(), generated, nil, 0)
+	if err != nil {
+		t.Fatalf("ParseFile %s: %v", generated, err)
+	}
+
+	fields := map[string][]string{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				for _, n := range field.Names {
+					fields[ts.Name.Name] = append(fields[ts.Name.Name], n.Name)
+				}
+			}
+		}
+	}
+	if len(fields) < 100 {
+		t.Fatalf("indexed only %d generated structs; the scan is not reading %s",
+			len(fields), generated)
+	}
+	return fields
+}
+
 // declaredIdentifiers collects every name the package declares: top-level names,
-// struct fields, interface methods, and Type.Member pairs.
-func declaredIdentifiers(files []*ast.File) (names, members, isType map[string]bool) {
+// struct fields, interface methods, and Type.Member pairs. A type declared over
+// one in internal/api contributes that type's fields, taken from generated.
+func declaredIdentifiers(files []*ast.File, generated map[string][]string) (names, members, isType map[string]bool) {
 	names, members, isType = map[string]bool{}, map[string]bool{}, map[string]bool{}
 
 	recordStruct := func(owner string, st *ast.StructType) {
@@ -110,6 +156,12 @@ func declaredIdentifiers(files []*ast.File) (names, members, isType map[string]b
 						switch t := s.Type.(type) {
 						case *ast.StructType:
 							recordStruct(s.Name.Name, t)
+						case *ast.SelectorExpr:
+							// type X = api.Y, or type X api.Y.
+							for _, field := range generated[t.Sel.Name] {
+								names[field] = true
+								members[s.Name.Name+"."+field] = true
+							}
 						case *ast.InterfaceType:
 							for _, m := range t.Methods.List {
 								for _, n := range m.Names {

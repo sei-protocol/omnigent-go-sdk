@@ -14,6 +14,11 @@ and left the default branch not building, so that a reviewer could judge the
 removal and the rebuild separately. This milestone restores it: `bin/check.sh`
 returns all five legs green.
 
+A generator writes the wire types again, on different terms. `bin/generate.sh`
+produces `internal/api` from the vendored spec. Every public type is a one-line
+declaration over it, so a generated name never reaches a consumer.
+`docs/adr/0001-generate-wire-types-behind-a-facade.md` records why.
+
 | Milestone | Contents |
 |---|---|
 | 1 | Remove the implementation and the generator. Refresh the vendored description |
@@ -58,8 +63,13 @@ bin/check.sh
 
 Five legs: `gofmt -l`, `go build`, `go vet`, `go test -race`, `go mod tidy -diff`.
 All five pass. CI runs the same script on the floor `go.mod` declares and on
-current stable. `golangci-lint` runs as its own job, because it needs an install
-this script deliberately does not.
+current stable.
+
+Two more legs run only in CI, both in the `Go SDK lint` job: `golangci-lint`, and
+a check that regenerates `internal/api` and fails if the committed copy differs.
+Each needs a tool outside the Go toolchain, which `bin/check.sh` deliberately
+does not need. Run `bin/generate.sh` yourself after touching the spec or
+`spec/preprocess.py`.
 
 ## Releasing
 

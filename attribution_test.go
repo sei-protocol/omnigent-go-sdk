@@ -34,10 +34,18 @@ func TestNoticeNamesEveryFileCarryingUpstreamProse(t *testing.T) {
 		t.Fatalf("read NOTICE: %v", err)
 	}
 
+	// internal/api is in scope because the generated file is where the upstream
+	// descriptions now land. A scan of the root package alone would report the
+	// attribution as complete while the file carrying the prose went unnamed.
 	sources, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
+	generated, err := filepath.Glob("internal/api/*.go")
+	if err != nil {
+		t.Fatalf("glob internal/api: %v", err)
+	}
+	sources = append(sources, generated...)
 	for _, path := range sources {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -116,9 +124,15 @@ func carriedDescriptionCount(t *testing.T, path string, descriptions []string) i
 	}
 	haystack := normaliseProse(comments.String())
 
+	// Case-folded, because the house doc-comment form lowercases the first letter
+	// of the description it reproduces: an upstream "Machine-readable error
+	// information..." becomes "// ErrorDetail is machine-readable error
+	// information...". A case-sensitive match reads that as carrying nothing, and
+	// this test's answer decides whether NOTICE names the file.
+	haystack = strings.ToLower(haystack)
 	count := 0
 	for _, description := range descriptions {
-		if strings.Contains(haystack, description) {
+		if strings.Contains(haystack, strings.ToLower(description)) {
 			count++
 		}
 	}

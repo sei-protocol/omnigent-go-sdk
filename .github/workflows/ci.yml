@@ -13,6 +13,11 @@ name: CI
 #
 #   Go SDK tests (1.25.x), Go SDK tests (stable), Go SDK lint
 #
+# `Go SDK lint` gates two things, not one: golangci-lint, and that internal/api is
+# what the spec produces. The second rides in that job rather than its own because
+# a new name is advisory until it is added to the list above, so a job added for a
+# gate would not have been one on the day it merged.
+#
 # Require those three and nothing else. Two names from the release workflows show
 # up in the same picker and must never be added:
 #
@@ -109,3 +114,29 @@ jobs:
 
       - name: Run golangci-lint
         run: golangci-lint run
+
+      # Folded into this job rather than added as its own, because a new job name
+      # is advisory until someone edits the branch's required-checks list, and a
+      # check that cannot block is not a gate. See the note at the top of this
+      # file.
+      #
+      # This is the only check that catches a spec bump nobody regenerated for. A
+      # new event variant fails TestEveryUnionMemberIsRegistered and a retyped
+      # field fails the conformance suite, but a new field on an existing schema
+      # is invisible to both: they read a Go type and ask the document about it,
+      # so a field no Go type declares is a field nothing asks about.
+      - name: Install oapi-codegen
+        run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
+
+      # --porcelain rather than `git diff`, which is blind to an untracked file: a
+      # config change that emits a second file into internal/api would otherwise
+      # pass this gate while going unaccounted for.
+      - name: Check the generated package is current
+        run: |
+          bin/generate.sh
+          if [ -n "$(git status --porcelain -- internal/api)" ]; then
+            git status --porcelain -- internal/api >&2
+            git diff -- internal/api >&2
+            printf '\ninternal/api is not what the spec produces. Run bin/generate.sh and commit the result.\n' >&2
+            exit 1
+          fi
