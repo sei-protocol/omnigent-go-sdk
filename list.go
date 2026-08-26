@@ -305,17 +305,20 @@ const maxListingPages = 10_000
 // same four lines every time: read a page, yield its items, stop, carry the cursor
 // forward. Getting it wrong is quiet, so this owns it.
 //
-// Four stops, because the server decides one of them and cannot be trusted with
-// the rest. It stops when the server says there is no more; when the cursor comes
-// back empty; when a page arrives with no rows, however much more it claims; and
-// when a cursor repeats or the page count reaches [maxListingPages], which is what
-// makes the walk end whatever the server does.
+// Two of the four stops end the walk, and two refuse it. It ends when the server
+// says there is no more, and when the cursor comes back empty. It refuses — yielding
+// [ErrListingUnbounded] — when a page claims more while returning nothing, and when
+// a cursor repeats or the page count reaches [maxListingPages].
 //
-// The empty-page stop is separate from the empty-cursor one on purpose. A listing
-// that reports more while returning nothing does not have to return an empty cursor
-// with it, and a proxy rewriting cursors will hand back a fresh one each time —
-// which also clears the repeat guard, leaving only the page cap, by which point
-// every row already collected is discarded as an error.
+// The split is the point. A stop the caller cannot see is indistinguishable from a
+// complete listing, so anything the walk did not reach reads as absent rather than
+// unseen. The two refusals are the shapes a correct server does not produce, so a
+// caller reaching them has been handed a partial answer and needs to know.
+//
+// The empty-page refusal is separate from the empty-cursor stop on purpose. A
+// listing that reports more while returning nothing does not have to return an empty
+// cursor with it, and a proxy rewriting cursors hands back a fresh one each time —
+// which clears the repeat guard too, leaving only the page cap.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
 // issues no further request. cursor is declared inside the closure, so a second
@@ -344,7 +347,18 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			if !page.HasMore || page.LastID == "" || len(page.Data) == 0 {
+			if !page.HasMore || page.LastID == "" {
+				return
+			}
+			if len(page.Data) == 0 {
+				// More promised, nothing delivered. Reported rather than returned
+				// quietly: a silent stop is indistinguishable from a complete listing,
+				// and a caller acting on the difference -- reclaiming every session it
+				// can find, say -- would treat a truncated answer as the whole set and
+				// report success over what it never saw.
+				var zero T
+				yield(zero, fmt.Errorf("%w: page %d claimed more while returning nothing",
+					ErrListingUnbounded, pages+1))
 				return
 			}
 			if seen[page.LastID] {

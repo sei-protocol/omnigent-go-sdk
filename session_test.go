@@ -428,16 +428,16 @@ func TestListingThatNeverAdvancesEnds(t *testing.T) {
 	}
 }
 
-// TestAnEmptyPageEndsTheListing pins the third stop condition, which
-// [Page.HasMore] documents and the walk did not implement.
+// TestAnEmptyPageRefusesTheListing pins the stop [Page.HasMore] documents and the
+// walk did not implement, and pins it as a refusal rather than a quiet end.
 //
-// A page with no rows that still claims more, carrying a cursor that advances,
-// clears both of the other guards: HasMore is true, LastID is non-empty, and no
-// cursor repeats. The walk then runs to the page cap and every row it collected
-// arrives as an error instead. A server does not produce this shape, which is
-// exactly why the doc says to terminate on it anyway -- the shape a proxy or a
-// future server produces is the one no caller is coded for.
-func TestAnEmptyPageEndsTheListing(t *testing.T) {
+// A page with no rows that still claims more clears both other guards: HasMore is
+// true, LastID is non-empty, and no cursor repeats. Left alone the walk runs to the
+// page cap. Stopped quietly it is worse than that: the caller cannot tell a
+// truncated listing from a complete one, so a reclaim sweep would report success
+// over the sessions it never saw. So it yields [ErrListingUnbounded] instead, like
+// the repeated-cursor and page-cap guards it belongs with.
+func TestAnEmptyPageRefusesTheListing(t *testing.T) {
 	t.Parallel()
 
 	var requests atomic.Int64
@@ -457,19 +457,28 @@ func TestAnEmptyPageEndsTheListing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	var got error
 	var rows int
 	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
 		if err != nil {
-			t.Fatalf("the walk errored on an empty page instead of ending: %v", err)
+			got = err
+			break
 		}
 		rows++
+	}
+	if got == nil {
+		t.Fatal("the walk ended quietly on a page that claimed more while returning " +
+			"nothing; a caller cannot tell that from a complete listing")
+	}
+	if !errors.Is(got, ErrListingUnbounded) {
+		t.Errorf("error = %v, want it to wrap ErrListingUnbounded", got)
 	}
 	if rows != 0 {
 		t.Errorf("yielded %d rows from empty pages", rows)
 	}
-	// One request: the first empty page is the end of the listing.
-	if got := requests.Load(); got != 1 {
-		t.Errorf("issued %d requests, want 1 -- an empty page is the end", got)
+	// One request: the first empty page settles it, so this costs no amplification.
+	if n := requests.Load(); n != 1 {
+		t.Errorf("issued %d requests, want 1", n)
 	}
 }
 
