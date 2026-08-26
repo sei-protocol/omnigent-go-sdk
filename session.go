@@ -99,9 +99,19 @@ func (s *Sessions) List(ctx context.Context, opts ListSessionsOptions) iter.Seq2
 
 // ListItems walks a session's conversation items in transcript order.
 //
-// The description types this listing's payload as heterogeneous, so each item's
-// own payload arrives undecoded. Switch on [ConversationItem.Type], then
-// unmarshal [ConversationItem.Data] into the matching variant.
+// Read only the common fields — id, response_id, type, status, created_at,
+// created_by. [ConversationItem.Data] is always nil here, so switching on the type
+// and unmarshalling it yields the zero value rather than the payload.
+//
+// This route sends the server's flatten-for-API shape, which spreads the payload's
+// own fields onto the item beside the common ones instead of nesting them under
+// data. [SessionItem] is that shape. The snapshot route,
+// [Sessions.Get] with GetSessionOptions.IncludeItems, is the one that nests, and a
+// [ConversationItem] from there does carry Data.
+//
+// Returning [ConversationItem] for this route is a mismatch, and correcting it is
+// breaking. Until then the compiler cannot tell a caller that Data is empty, so
+// this comment has to.
 func (s *Sessions) ListItems(ctx context.Context, sessionID string, opts SessionItemsOptions) iter.Seq2[ConversationItem, error] {
 	if sessionID == "" {
 		return errSeq[ConversationItem](fmt.Errorf("list session items: %w: sessionID is required", ErrInvalidArgument))

@@ -238,10 +238,8 @@ func (o ListSessionsOptions) query() url.Values {
 // An alias rather than a defined type, so it interchanges with the same flat
 // shape on the stream, [OutputItemDoneEvent.Item].
 //
-// Nothing returns this yet: [Sessions.ListItems] returns [ConversationItem], whose
-// Data is therefore always nil on this route. Reading a payload field off that
-// result silently gets the zero value. Only the shared top-level fields are safe
-// to read until the signature is corrected, which is a breaking change.
+// Nothing returns this yet — [Sessions.ListItems] returns [ConversationItem]
+// instead, and says there what that costs a caller.
 type SessionItem = map[string]any
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
@@ -307,11 +305,17 @@ const maxListingPages = 10_000
 // same four lines every time: read a page, yield its items, stop, carry the cursor
 // forward. Getting it wrong is quiet, so this owns it.
 //
-// Three stops, because the server decides two of them and cannot be trusted with
-// the third. It stops when the server says there is no more; when the cursor comes
-// back empty, which a listing that reports more while returning nothing would
-// otherwise loop on; and when a cursor repeats or the page count reaches
-// [maxListingPages], which is what makes the walk end whatever the server does.
+// Four stops, because the server decides one of them and cannot be trusted with
+// the rest. It stops when the server says there is no more; when the cursor comes
+// back empty; when a page arrives with no rows, however much more it claims; and
+// when a cursor repeats or the page count reaches [maxListingPages], which is what
+// makes the walk end whatever the server does.
+//
+// The empty-page stop is separate from the empty-cursor one on purpose. A listing
+// that reports more while returning nothing does not have to return an empty cursor
+// with it, and a proxy rewriting cursors will hand back a fresh one each time —
+// which also clears the repeat guard, leaving only the page cap, by which point
+// every row already collected is discarded as an error.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
 // issues no further request. cursor is declared inside the closure, so a second
