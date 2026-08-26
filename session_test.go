@@ -262,29 +262,83 @@ func TestListStopsWhenTheCallerStopsRanging(t *testing.T) {
 	}
 }
 
-func TestListTerminatesOnAnEmptyCursorEvenWhenTheServerSaysMore(t *testing.T) {
+// TestListRefusesEveryCutShortListing covers the three ways a page can say the
+// listing is unfinished while giving the walk no way to finish it.
+//
+// All three used to end the walk quietly, which bounded the requests but told the
+// caller nothing. That is the worse half of the problem: a quiet stop is
+// indistinguishable from a complete listing, so a caller that acts on completeness
+// -- a reclaim sweep deleting every session it can find -- reports success over
+// what it never saw. An error is recoverable by ignoring it; silence is not
+// recoverable at all.
+//
+// Each still costs one request, which is what the quiet stops were protecting.
+func TestListRefusesEveryCutShortListing(t *testing.T) {
 	t.Parallel()
 
-	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		// A proxy or a future server that reports more while returning nothing.
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[],"has_more":true}`))
-	}))
-	defer server.Close()
+	for _, tc := range []struct {
+		name string
+		page string
+		want string
+	}{
+		{
+			// The shape [Page.LastID] documents: an empty page carries an empty
+			// cursor. Reachable from a proxy, and from the server itself at limit=0.
+			name: "nothing returned, no cursor",
+			page: `{"data":[],"has_more":true}`,
+			want: "claimed more while returning nothing",
+		},
+		{
+			// A proxy rewriting cursors: nothing returned, but the cursor moves, so
+			// the repeated-cursor guard never fires either.
+			name: "nothing returned, cursor advances",
+			page: `{"data":[],"has_more":true,"last_id":"cur_1"}`,
+			want: "claimed more while returning nothing",
+		},
+		{
+			// Rows, more promised, and nothing to ask for them with.
+			name: "rows returned, no cursor",
+			page: `{"data":[{"id":"conv_1"}],"has_more":true}`,
+			want: "no cursor to follow",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	client, err := New(server.URL)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
-		if err != nil {
-			t.Fatalf("List: %v", err)
-		}
-	}
-	if got := requests.Load(); got != 1 {
-		t.Errorf("issued %d requests against an empty page reporting has_more; want 1", got)
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.page))
+			}))
+			defer server.Close()
+
+			client, err := New(server.URL)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			var got error
+			for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
+				if err != nil {
+					got = err
+					break
+				}
+			}
+			if got == nil {
+				t.Fatal("the walk ended quietly; a caller cannot tell this from a " +
+					"complete listing")
+			}
+			if !errors.Is(got, ErrListingUnbounded) {
+				t.Errorf("error = %v, want it to wrap ErrListingUnbounded", got)
+			}
+			if !strings.Contains(got.Error(), tc.want) {
+				t.Errorf("error = %v, want it to name %q so the shape is diagnosable",
+					got, tc.want)
+			}
+			if n := requests.Load(); n != 1 {
+				t.Errorf("issued %d requests, want 1", n)
+			}
+		})
 	}
 }
 
@@ -425,60 +479,6 @@ func TestListingThatNeverAdvancesEnds(t *testing.T) {
 	}
 	if requests.Load() > 10 {
 		t.Errorf("issued %d requests before stopping", requests.Load())
-	}
-}
-
-// TestAnEmptyPageRefusesTheListing pins the stop [Page.HasMore] documents and the
-// walk did not implement, and pins it as a refusal rather than a quiet end.
-//
-// A page with no rows that still claims more clears both other guards: HasMore is
-// true, LastID is non-empty, and no cursor repeats. Left alone the walk runs to the
-// page cap. Stopped quietly it is worse than that: the caller cannot tell a
-// truncated listing from a complete one, so a reclaim sweep would report success
-// over the sessions it never saw. So it yields [ErrListingUnbounded] instead, like
-// the repeated-cursor and page-cap guards it belongs with.
-func TestAnEmptyPageRefusesTheListing(t *testing.T) {
-	t.Parallel()
-
-	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := requests.Add(1)
-		page := Page[SessionListItem]{
-			Data:    nil,                      // nothing, but
-			HasMore: true,                     // always more,
-			LastID:  fmt.Sprintf("cur_%d", n), // on a cursor that advances
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(page)
-	}))
-	defer server.Close()
-
-	client, err := New(server.URL)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	var got error
-	var rows int
-	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
-		if err != nil {
-			got = err
-			break
-		}
-		rows++
-	}
-	if got == nil {
-		t.Fatal("the walk ended quietly on a page that claimed more while returning " +
-			"nothing; a caller cannot tell that from a complete listing")
-	}
-	if !errors.Is(got, ErrListingUnbounded) {
-		t.Errorf("error = %v, want it to wrap ErrListingUnbounded", got)
-	}
-	if rows != 0 {
-		t.Errorf("yielded %d rows from empty pages", rows)
-	}
-	// One request: the first empty page settles it, so this costs no amplification.
-	if n := requests.Load(); n != 1 {
-		t.Errorf("issued %d requests, want 1", n)
 	}
 }
 

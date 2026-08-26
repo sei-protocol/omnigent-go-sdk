@@ -28,12 +28,15 @@ import (
 //		for _, s := range page.Data {
 //			// ...
 //		}
-//		// Two conditions, not one. HasMore is the server's answer; the empty
-//		// check is what makes the loop terminate on its own rather than on the
-//		// server's good behaviour. An empty page yields an empty LastID, so
-//		// continuing would re-request the first page forever.
-//		if !page.HasMore || len(page.Data) == 0 {
+//		// Only the server saying there is no more is a finished listing. A page
+//		// that claims more while returning nothing, or with no cursor to follow,
+//		// is a listing cut short -- breaking quietly on those makes a truncated
+//		// answer look like the whole set. [pageSeq] refuses them for this reason.
+//		if !page.HasMore {
 //			break
+//		}
+//		if len(page.Data) == 0 || page.LastID == "" {
+//			return fmt.Errorf("listing cut short after %d pages", seen)
 //		}
 //		opts.After = page.LastID
 //	}
@@ -59,12 +62,16 @@ type Page[T any] struct {
 	// direction — the direction is baked in, because the server applies the
 	// cursor comparison and the ordering together.
 	//
-	// It is the loop condition, and a full page does not imply another one: the
-	// server asks for one row more than the limit and reports whether it got it.
-	// That also means a true HasMore beside an empty Data is not something this
-	// server produces. Terminate on both anyway, per the loop above — an empty
-	// page carries an empty LastID, so a caller that trusts HasMore alone re-reads
-	// the first page for as long as a proxy or a future server keeps saying yes.
+	// A false value is the only finished listing. A full page does not imply
+	// another one: the server asks for one row more than the limit and reports
+	// whether it got it, so a true value beside an empty Data is not something this
+	// server produces.
+	//
+	// Do not treat that shape as an end anyway. It means the listing was cut short,
+	// and a caller that breaks quietly on it cannot tell a truncated answer from a
+	// complete one — while a caller that trusts this field alone re-reads the first
+	// page for as long as a proxy or a future server keeps saying yes. [pageSeq]
+	// yields [ErrListingUnbounded] instead, and so should a hand-rolled loop.
 	HasMore bool `json:"has_more"`
 }
 
@@ -347,17 +354,28 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			if !page.HasMore || page.LastID == "" {
+			// The server saying there is no more is the only quiet end. Every other
+			// reason to stop means the listing was cut short, and a quiet stop is
+			// indistinguishable from a complete one -- a caller acting on the
+			// difference, reclaiming every session it can find say, would treat a
+			// truncated answer as the whole set and report success over what it
+			// never saw.
+			if !page.HasMore {
 				return
 			}
 			if len(page.Data) == 0 {
-				// More promised, nothing delivered. Reported rather than returned
-				// quietly: a silent stop is indistinguishable from a complete listing,
-				// and a caller acting on the difference -- reclaiming every session it
-				// can find, say -- would treat a truncated answer as the whole set and
-				// report success over what it never saw.
+				// More promised, nothing delivered. This is the shape [Page.LastID]
+				// describes -- an empty page carries an empty cursor -- so it is
+				// checked before the cursor, which would otherwise absorb it.
 				var zero T
 				yield(zero, fmt.Errorf("%w: page %d claimed more while returning nothing",
+					ErrListingUnbounded, pages+1))
+				return
+			}
+			if page.LastID == "" {
+				// Rows, more promised, and nothing to ask for them with.
+				var zero T
+				yield(zero, fmt.Errorf("%w: page %d claimed more with no cursor to follow",
 					ErrListingUnbounded, pages+1))
 				return
 			}
