@@ -358,6 +358,12 @@ func (s *Sessions) ResolveElicitation(ctx context.Context, sessionID, elicitatio
 	if sessionID == "" || elicitationID == "" {
 		return fmt.Errorf("resolve elicitation: %w: sessionID and elicitationID are required", ErrInvalidArgument)
 	}
+	// The server requires an action and answers 422 without one. Caught here so a
+	// caller that built the verdict from an empty variable learns which argument was
+	// wrong, rather than reading a validation error about a field it never named.
+	if result.Action == "" {
+		return fmt.Errorf("resolve elicitation: %w: Action is required", ErrInvalidArgument)
+	}
 	return s.client.doJSON(ctx, http.MethodPost,
 		[]string{"v1", "sessions", sessionID, "elicitations", elicitationID, "resolve"},
 		nil, result, nil)

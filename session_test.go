@@ -428,6 +428,51 @@ func TestListingThatNeverAdvancesEnds(t *testing.T) {
 	}
 }
 
+// TestAnEmptyPageEndsTheListing pins the third stop condition, which
+// [Page.HasMore] documents and the walk did not implement.
+//
+// A page with no rows that still claims more, carrying a cursor that advances,
+// clears both of the other guards: HasMore is true, LastID is non-empty, and no
+// cursor repeats. The walk then runs to the page cap and every row it collected
+// arrives as an error instead. A server does not produce this shape, which is
+// exactly why the doc says to terminate on it anyway -- the shape a proxy or a
+// future server produces is the one no caller is coded for.
+func TestAnEmptyPageEndsTheListing(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		page := Page[SessionListItem]{
+			Data:    nil,                      // nothing, but
+			HasMore: true,                     // always more,
+			LastID:  fmt.Sprintf("cur_%d", n), // on a cursor that advances
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	var rows int
+	for _, err := range client.Sessions().List(t.Context(), ListSessionsOptions{}) {
+		if err != nil {
+			t.Fatalf("the walk errored on an empty page instead of ending: %v", err)
+		}
+		rows++
+	}
+	if rows != 0 {
+		t.Errorf("yielded %d rows from empty pages", rows)
+	}
+	// One request: the first empty page is the end of the listing.
+	if got := requests.Load(); got != 1 {
+		t.Errorf("issued %d requests, want 1 -- an empty page is the end", got)
+	}
+}
+
 // TestChildrenTreeBoundsEveryLevel pins the concurrency bound at the level that
 // has the most requests.
 //

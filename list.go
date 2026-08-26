@@ -227,16 +227,21 @@ func (o ListSessionsOptions) query() url.Values {
 
 // SessionItem is one item from [Sessions.ListItems].
 //
-// It is untyped because the route sends the server's flatten-for-API shape
-// rather than the [ConversationItem] a snapshot carries: id, response_id, type
-// and status sit beside the typed payload's own fields — role and content on a
-// message, name and arguments on a function call — spread onto the same object,
-// with absent optional fields left out and no created_at at all. openapi.json
-// declares this page's elements untyped, so there is nothing generated to decode
-// them into either.
+// It is untyped because the route sends the server's flatten-for-API shape rather
+// than the [ConversationItem] a snapshot carries. Both carry id, response_id,
+// type, status and created_at; the difference is the payload. A snapshot nests it
+// under data, while this route spreads the payload's own fields — role and content
+// on a message, name and arguments on a function call — onto the same object,
+// leaving absent optional fields out. openapi.json declares this page's elements
+// untyped, so there is nothing generated to decode them into either.
 //
 // An alias rather than a defined type, so it interchanges with the same flat
 // shape on the stream, [OutputItemDoneEvent.Item].
+//
+// Nothing returns this yet: [Sessions.ListItems] returns [ConversationItem], whose
+// Data is therefore always nil on this route. Reading a payload field off that
+// result silently gets the zero value. Only the shared top-level fields are safe
+// to read until the signature is corrected, which is a breaking change.
 type SessionItem = map[string]any
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
@@ -335,7 +340,7 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			if !page.HasMore || page.LastID == "" {
+			if !page.HasMore || page.LastID == "" || len(page.Data) == 0 {
 				return
 			}
 			if seen[page.LastID] {
