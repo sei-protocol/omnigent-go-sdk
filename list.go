@@ -16,29 +16,33 @@ import (
 // "object": "list" alongside them, which the Go type already conveys, so it is
 // not carried here.
 //
-// Paging is by opaque cursor, not offset. To walk a listing, pass the previous
-// page's [Page.LastID] as the next request's After while [Page.HasMore] is true:
+// Paging is by opaque cursor, not offset: the next request carries the previous
+// page's [Page.LastID] as its After while [Page.HasMore] is true.
 //
-//	opts := omnigent.ListSessionsOptions{AgentID: agentID}
-//	for {
-//		page, err := client.ListSessions(ctx, opts)
+// No exported call returns a single Page, so this is not a loop a caller writes.
+// Every listing on this client is an [iter.Seq2] that runs it — Sessions().List and
+// its siblings — and the shape is here because the stop conditions are the part that
+// is easy to get wrong, and worth reading before trusting a listing:
+//
+//	for pages := 0; ; pages++ {
+//		page, err := fetch(ctx, cursor) // one request, one Page
 //		if err != nil {
 //			return err
 //		}
-//		for _, s := range page.Data {
+//		for _, item := range page.Data {
 //			// ...
 //		}
 //		// Only the server saying there is no more is a finished listing. A page
 //		// that claims more while returning nothing, or with no cursor to follow,
-//		// is a listing cut short -- breaking quietly on those makes a truncated
-//		// answer look like the whole set. [pageSeq] refuses them for this reason.
+//		// is a listing cut short, and breaking quietly on either makes a
+//		// truncated answer look like the whole set.
 //		if !page.HasMore {
 //			break
 //		}
 //		if len(page.Data) == 0 || page.LastID == "" {
-//			return fmt.Errorf("listing cut short after %d pages", seen)
+//			return fmt.Errorf("listing cut short after %d pages", pages+1)
 //		}
-//		opts.After = page.LastID
+//		cursor = page.LastID
 //	}
 //
 // Reversing that walk means Before and [Page.FirstID] instead. Do not derive a
@@ -312,20 +316,21 @@ const maxListingPages = 10_000
 // same four lines every time: read a page, yield its items, stop, carry the cursor
 // forward. Getting it wrong is quiet, so this owns it.
 //
-// Two of the four stops end the walk, and two refuse it. It ends when the server
-// says there is no more, and when the cursor comes back empty. It refuses — yielding
-// [ErrListingUnbounded] — when a page claims more while returning nothing, and when
-// a cursor repeats or the page count reaches [maxListingPages].
+// One stop ends the walk and four refuse it. It ends when the server says there is
+// no more. It refuses — yielding [ErrListingUnbounded] — when a page claims more
+// while returning nothing, when a page claims more with no cursor to follow, and
+// when a cursor repeats or the page count reaches [maxListingPages].
 //
 // The split is the point. A stop the caller cannot see is indistinguishable from a
 // complete listing, so anything the walk did not reach reads as absent rather than
-// unseen. The two refusals are the shapes a correct server does not produce, so a
-// caller reaching them has been handed a partial answer and needs to know.
+// unseen. Every refusal is a shape a correct server does not produce, so a caller
+// reaching one has been handed a partial answer and needs to know.
 //
-// The empty-page refusal is separate from the empty-cursor stop on purpose. A
-// listing that reports more while returning nothing does not have to return an empty
-// cursor with it, and a proxy rewriting cursors hands back a fresh one each time —
-// which clears the repeat guard too, leaving only the page cap.
+// The empty-page refusal is checked before the cursor on purpose, because the two
+// arrive together: [Page.LastID] is empty when Data is, so a cursor check placed
+// first would absorb the empty page and end the walk quietly. A proxy rewriting
+// cursors produces the same emptiness with a fresh cursor each time, which clears
+// the repeat guard too and would otherwise leave only the page cap.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
 // issues no further request. cursor is declared inside the closure, so a second

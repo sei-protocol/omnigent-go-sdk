@@ -86,13 +86,20 @@ var (
 	// a hostile one. Recover exactly as for [ErrStreamInterrupted].
 	ErrStreamFrameTooLarge = fmt.Errorf("%w: frame exceeds the client's size limit", ErrStreamProtocol)
 
-	// ErrListingUnbounded reports a paged listing that never reached an end: it
-	// returned a cursor it had already returned, or kept reporting more past the
-	// page ceiling.
+	// ErrListingUnbounded reports a paged listing a walk could not finish. Four
+	// shapes raise it: a page claiming more while returning nothing, a page claiming
+	// more with no cursor to follow, a cursor the server had already returned, and a
+	// page count reaching the walk's ceiling.
+	//
+	// The first two settle after one request, so "unbounded" describes the listing's
+	// contract rather than the cost of discovering it: the server has promised a
+	// continuation it gave no way to reach, which is the same defect the other two
+	// reach by spending requests on it.
 	//
 	// The server decides when a listing ends, so a walk cannot rely on it. This is
 	// what the walk raises instead of continuing, and retrying will not help until
-	// the server's paging is fixed.
+	// the server's paging is fixed. Anything the walk yielded before the error is
+	// real, and incomplete.
 	ErrListingUnbounded = errors.New("listing did not reach an end")
 
 	// ErrTruncated reports that a response was larger than the bound the caller
