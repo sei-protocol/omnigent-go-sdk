@@ -356,9 +356,16 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 		`"status":"completed","created_at":1753900000,"role":"assistant",` +
 		`"content":[{"type":"output_text","text":"hi"}],"model":"databricks-gpt-5-4"}`
 
+	// A second item, human-authored, so created_by has a value to be read wrongly.
+	// With only the assistant item above, every assertion about created_by is about
+	// an absent field -- which reading any wrong key also satisfies.
+	const humanItem = `{"id":"msg_human","response_id":"resp_xyz","type":"message",` +
+		`"status":"completed","created_at":1753900001,"created_by":"alice@example.com",` +
+		`"role":"user","content":[{"type":"input_text","text":"go"}]}`
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[` + item + `],"has_more":false}`))
+		_, _ = w.Write([]byte(`{"data":[` + item + `,` + humanItem + `],"has_more":false}`))
 	}))
 	defer server.Close()
 
@@ -374,8 +381,8 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 		}
 		got = append(got, it)
 	}
-	if len(got) != 1 {
-		t.Fatalf("yielded %d items, want 1", len(got))
+	if len(got) != 2 {
+		t.Fatalf("yielded %d items, want 2", len(got))
 	}
 
 	// The common fields, through the accessors.
@@ -402,15 +409,12 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 		t.Errorf("ItemCreatedBy = %q, want empty for an item no human authored", by)
 	}
 
-	// The trap ItemCreatedAt exists for: encoding/json stores every JSON number in a
-	// map[string]any as float64, so asserting to int64 compiles, does not panic on
-	// the comma-ok form, and answers zero for a field that is plainly present.
-	if _, ok := got[0]["created_at"].(int64); ok {
-		t.Error("created_at asserted to int64; the accessor's reason for existing is gone")
+	// The human-authored item, which is what gives created_by a value to get wrong.
+	if by := ItemCreatedBy(got[1]); by != "alice@example.com" {
+		t.Errorf("ItemCreatedBy = %q, want alice@example.com", by)
 	}
-	if _, ok := got[0]["created_at"].(float64); !ok {
-		t.Errorf("created_at is %T, not float64; ItemCreatedAt reads the wrong type",
-			got[0]["created_at"])
+	if at := ItemCreatedAt(got[1]); at != 1753900001 {
+		t.Errorf("ItemCreatedAt = %d, want 1753900001", at)
 	}
 
 	// The payload, which is the part a ConversationItem could not reach.

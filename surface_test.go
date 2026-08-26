@@ -188,6 +188,13 @@ func TestListOptionsRenderTheirQuery(t *testing.T) {
 			name:  "files",
 			query: ListFilesOptions{Limit: 5, Order: SortAscending}.query(),
 			want:  map[string]string{"limit": "5", "order": "asc"},
+		}, {
+			// The fourth builder, and the one the driver actually sets Limit on:
+			// it walks a whole transcript at Limit 1000, so a dropped limit means
+			// pages of the server's default instead.
+			name:  "session items",
+			query: SessionItemsOptions{Limit: 1000, Order: SortDescending}.query(),
+			want:  map[string]string{"limit": "1000", "order": "desc"},
 		},
 	}
 	for _, tc := range cases {
