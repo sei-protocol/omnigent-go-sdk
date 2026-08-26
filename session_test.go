@@ -342,6 +342,104 @@ func TestListRefusesEveryCutShortListing(t *testing.T) {
 	}
 }
 
+// TestListItemsYieldsThePayloadAndNotAnEmptyShell pins the shape this route sends.
+//
+// The body is upstream's own documented example of the flatten-for-API shape, from
+// the server helper that produces it: the payload's fields sit on the item beside
+// the common ones, with no data key. Typed as [ConversationItem] the payload was
+// unreachable — Data stayed nil and a caller reading it got the zero value with no
+// error — so nothing here failed and nothing said why.
+func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
+	t.Parallel()
+
+	const item = `{"id":"msg_abc","response_id":"resp_xyz","type":"message",` +
+		`"status":"completed","created_at":1753900000,"role":"assistant",` +
+		`"content":[{"type":"output_text","text":"hi"}],"model":"databricks-gpt-5-4"}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[` + item + `],"has_more":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var got []SessionItem
+	for it, err := range client.Sessions().ListItems(t.Context(), "conv_1", SessionItemsOptions{}) {
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
+		}
+		got = append(got, it)
+	}
+	if len(got) != 1 {
+		t.Fatalf("yielded %d items, want 1", len(got))
+	}
+
+	// The common fields, through the accessors.
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"ItemID", ItemID(got[0]), "msg_abc"},
+		{"ItemResponseID", ItemResponseID(got[0]), "resp_xyz"},
+		{"ItemType", ItemType(got[0]), "message"},
+		{"ItemStatus", ItemStatus(got[0]), "completed"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+
+	// The payload, which is the part a ConversationItem could not reach.
+	if role, _ := got[0]["role"].(string); role != "assistant" {
+		t.Errorf(`item["role"] = %q, want "assistant"`, role)
+	}
+	content, ok := got[0]["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf(`item["content"] = %#v, want one block`, got[0]["content"])
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content block = %#v, want an object", content[0])
+	}
+	if text, _ := block["text"].(string); text != "hi" {
+		t.Errorf(`content[0]["text"] = %q, want "hi"`, text)
+	}
+}
+
+// TestItemAccessorsTreatAbsentAndWrongTypeAlike pins what the accessors do with a
+// field the server did not send, and one holding something else. Both yield "",
+// because a caller has no different action to take for either.
+func TestItemAccessorsTreatAbsentAndWrongTypeAlike(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		item SessionItem
+	}{
+		{"absent", SessionItem{}},
+		{"wrong type", SessionItem{"id": 42, "response_id": nil, "type": []any{}, "status": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for name, got := range map[string]string{
+				"ItemID":         ItemID(tc.item),
+				"ItemResponseID": ItemResponseID(tc.item),
+				"ItemType":       ItemType(tc.item),
+				"ItemStatus":     ItemStatus(tc.item),
+			} {
+				if got != "" {
+					t.Errorf("%s = %q, want empty", name, got)
+				}
+			}
+		})
+	}
+}
+
 func TestRejectedArgumentReachesTheCallerThroughTheSequence(t *testing.T) {
 	t.Parallel()
 

@@ -249,9 +249,34 @@ func (o ListSessionsOptions) query() url.Values {
 // An alias rather than a defined type, so it interchanges with the same flat
 // shape on the stream, [OutputItemDoneEvent.Item].
 //
-// Nothing returns this yet — [Sessions.ListItems] returns [ConversationItem]
-// instead, and says there what that costs a caller.
+// [Sessions.ListItems] yields these. Use [ItemID], [ItemResponseID], [ItemType] and
+// [ItemStatus] for the fields every item carries; read the payload's own fields
+// directly, keyed by what the item's type declares.
 type SessionItem = map[string]any
+
+// ItemID, ItemResponseID, ItemType and ItemStatus read the fields every
+// [SessionItem] carries, whatever its type.
+//
+// They exist because the alternative at each call site is a double assertion —
+// fetch, then assert to string — repeated per field, where a missing key and a key
+// holding the wrong type both have to end up as the same empty string anyway. All
+// four read through the same helper the stream's item handling uses, so an absent
+// field and a field holding a non-string both yield "".
+//
+// The payload's own fields have no accessors: which ones are present depends on the
+// item's type, so reading them means knowing the type first.
+func ItemID(item SessionItem) string { return itemString(item, "id") }
+
+// ItemResponseID reports which response this item belongs to. Empty on an item the
+// server did not attribute to one.
+func ItemResponseID(item SessionItem) string { return itemString(item, "response_id") }
+
+// ItemType reports the item's kind, e.g. "message" or "function_call". It decides
+// which payload fields the item carries.
+func ItemType(item SessionItem) string { return itemString(item, "type") }
+
+// ItemStatus reports the item's lifecycle state, e.g. "completed".
+func ItemStatus(item SessionItem) string { return itemString(item, "status") }
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
 // server's defaults: the session's oldest 100 items, chronologically.
