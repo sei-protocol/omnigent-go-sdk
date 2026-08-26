@@ -394,11 +394,9 @@ func TestOfflineRunnerIsNeverChosen(t *testing.T) {
 // nothing about data — which is how this shipped posting {"text": ...} in v0.2.0
 // and v0.2.1. A message input carries a role and a list of content blocks.
 //
-// Three sources agree, which matters because the events route is
-// include_in_schema=False and openapi.json therefore documents no request body:
-// upstream's client builds the same map, this module's own v0.1.2 UserMessage
-// built it too, and MessageData in the description marks role and content
-// required. spec/README.md carries the pinned citation.
+// The events route is include_in_schema=False, so openapi.json documents no
+// request body and this test is the only thing pinning it. spec/README.md carries
+// the pinned citation for where the shape comes from.
 //
 // A separate function rather than a table row: the table compares with != on any,
 // which panics on a map.
