@@ -9,7 +9,7 @@ This module was rebuilt to match the shape of the upstream Python client at
 `sdks/python-client`. That client is an agent-interaction library. This module was
 a typed transport. The rebuild closed the difference.
 
-All four milestones are in `v0.2.0`, and `v0.2.1` is the current release:
+All four milestones are in `v0.2.0`, and `v0.2.2` is the current release:
 
 | Milestone | Contents | Status |
 |---|---|---|
@@ -36,15 +36,16 @@ its own change in that repository.
 Pin a released version:
 
 ```sh
-go get github.com/sei-protocol/omnigent-go-sdk@v0.2.1
+go get github.com/sei-protocol/omnigent-go-sdk@v0.2.2
 ```
 
-`v0.2.1` is the current release. Pin it rather than `v0.2.0`, which is the one
-release whose approval hook cannot see the tool it is approving — the elicitation
-params lost their undeclared properties there, and `tool_name` is among them.
+`v0.2.2` is the current release, and the first whose turn loop works. `v0.2.0` and
+`v0.2.1` post a user message the server cannot read, so every turn they drive
+stalls; `v0.2.0` also loses `tool_name` from an approval, which silently disables a
+policy that allowlists tools. Neither is usable for driving an agent.
 
 `v0.2.0` was the first release carrying this surface: sessions, files, the turn
-loop, block folding and client-side tools. `@latest` resolves to `v0.2.1`.
+loop, block folding and client-side tools. `@latest` resolves to `v0.2.2`.
 
 Coming from `v0.1.x` is a breaking upgrade. Three exported fields changed type,
 and one of them changes decoding rather than only compilation:
