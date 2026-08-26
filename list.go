@@ -254,8 +254,8 @@ func (o ListSessionsOptions) query() url.Values {
 // directly, keyed by what the item's type declares.
 type SessionItem = map[string]any
 
-// ItemID, ItemResponseID, ItemType and ItemStatus read the fields every
-// [SessionItem] carries, whatever its type.
+// ItemID, ItemResponseID, ItemType, ItemStatus, ItemCreatedAt and ItemCreatedBy
+// read the fields every [SessionItem] carries, whatever its type.
 //
 // They exist because the alternative at each call site is a double assertion —
 // fetch, then assert to string — repeated per field, where a missing key and a key
@@ -264,7 +264,11 @@ type SessionItem = map[string]any
 // field and a field holding a non-string both yield "".
 //
 // The payload's own fields have no accessors: which ones are present depends on the
-// item's type, so reading them means knowing the type first.
+// item's type, so reading them means knowing the type first. Reading one means
+// knowing how encoding/json stored it, and the trap is numbers: every JSON number in
+// a map[string]any is a float64, so a type assertion to int or int64 does not fail
+// loudly, it yields zero. [ItemCreatedAt] exists because created_at is the common
+// field that trap applies to.
 func ItemID(item SessionItem) string { return itemString(item, "id") }
 
 // ItemResponseID reports which response this item belongs to. Empty on an item the
@@ -277,6 +281,29 @@ func ItemType(item SessionItem) string { return itemString(item, "type") }
 
 // ItemStatus reports the item's lifecycle state, e.g. "completed".
 func ItemStatus(item SessionItem) string { return itemString(item, "status") }
+
+// ItemCreatedAt reports when the server recorded the item, in Unix seconds. Zero
+// when the field is absent or holds anything but a number.
+//
+// Reads through float64 because that is what encoding/json stores every JSON number
+// as in a map[string]any. Asserting to int64 directly compiles, never panics on the
+// comma-ok form, and yields zero for every item — a silent wrong answer, which is
+// the shape this listing's accessors exist to prevent.
+func ItemCreatedAt(item SessionItem) int64 {
+	seconds, ok := item["created_at"].(float64)
+	if !ok {
+		return 0
+	}
+	return int64(seconds)
+}
+
+// ItemCreatedBy reports the human actor who authored the item, and is empty for one
+// the agent, a tool, or the system produced.
+//
+// The server omits the field rather than sending null for a non-human item, so empty
+// here means absent. That distinction is what separates a client-authored item from
+// the agent's own, which is a reason to reject one as a turn's reply.
+func ItemCreatedBy(item SessionItem) string { return itemString(item, "created_by") }
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
 // server's defaults: the session's oldest 100 items, chronologically.

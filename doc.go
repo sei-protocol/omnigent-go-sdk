@@ -104,8 +104,11 @@
 // hand-written and the file surface sits wholly outside the gate. It keeps the
 // decoded body on [SessionFile.Raw] for that reason.
 //
-// The agent and item listings type their payload as heterogeneous, so
-// [Sessions.ListAgents] and [Sessions.ListItems] narrow it by hand.
+// The agent listing types its payload as heterogeneous, so [Sessions.ListAgents]
+// narrows it by hand. The item listing is heterogeneous on the wire too, and is not
+// narrowed: [Sessions.ListItems] yields [SessionItem], the flat shape the route
+// sends, because the payload's fields sit on the item rather than under a key a
+// typed struct could decode.
 //
 // # Turns
 //

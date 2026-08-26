@@ -393,6 +393,25 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
 		}
 	}
+	if at := ItemCreatedAt(got[0]); at != 1753900000 {
+		t.Errorf("ItemCreatedAt = %d, want 1753900000", at)
+	}
+	// The example is an assistant message, which the server does not attribute to a
+	// human, so it omits the field rather than sending null.
+	if by := ItemCreatedBy(got[0]); by != "" {
+		t.Errorf("ItemCreatedBy = %q, want empty for an item no human authored", by)
+	}
+
+	// The trap ItemCreatedAt exists for: encoding/json stores every JSON number in a
+	// map[string]any as float64, so asserting to int64 compiles, does not panic on
+	// the comma-ok form, and answers zero for a field that is plainly present.
+	if _, ok := got[0]["created_at"].(int64); ok {
+		t.Error("created_at asserted to int64; the accessor's reason for existing is gone")
+	}
+	if _, ok := got[0]["created_at"].(float64); !ok {
+		t.Errorf("created_at is %T, not float64; ItemCreatedAt reads the wrong type",
+			got[0]["created_at"])
+	}
 
 	// The payload, which is the part a ConversationItem could not reach.
 	if role, _ := got[0]["role"].(string); role != "assistant" {
@@ -422,7 +441,8 @@ func TestItemAccessorsTreatAbsentAndWrongTypeAlike(t *testing.T) {
 		item SessionItem
 	}{
 		{"absent", SessionItem{}},
-		{"wrong type", SessionItem{"id": 42, "response_id": nil, "type": []any{}, "status": true}},
+		{"wrong type", SessionItem{"id": 42, "response_id": nil, "type": []any{},
+			"status": true, "created_at": "1753900000", "created_by": 7}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -431,10 +451,14 @@ func TestItemAccessorsTreatAbsentAndWrongTypeAlike(t *testing.T) {
 				"ItemResponseID": ItemResponseID(tc.item),
 				"ItemType":       ItemType(tc.item),
 				"ItemStatus":     ItemStatus(tc.item),
+				"ItemCreatedBy":  ItemCreatedBy(tc.item),
 			} {
 				if got != "" {
 					t.Errorf("%s = %q, want empty", name, got)
 				}
+			}
+			if got := ItemCreatedAt(tc.item); got != 0 {
+				t.Errorf("ItemCreatedAt = %d, want 0", got)
 			}
 		})
 	}
