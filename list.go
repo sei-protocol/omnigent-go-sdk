@@ -246,12 +246,75 @@ func (o ListSessionsOptions) query() url.Values {
 // leaving absent optional fields out. openapi.json declares this page's elements
 // untyped, so there is nothing generated to decode them into either.
 //
-// An alias rather than a defined type, so it interchanges with the same flat
-// shape on the stream, [OutputItemDoneEvent.Item].
+// A defined type rather than an alias, so the common fields are methods instead of
+// six package-level names. It still assigns both ways with a plain map[string]any,
+// including the same flat shape on the stream, [OutputItemDoneEvent.Item], because
+// that side is unnamed. The one thing it does not do is match a type switch: boxed
+// in an any, a SessionItem falls through case map[string]any. Convert explicitly
+// where that matters.
 //
-// Nothing returns this yet — [Sessions.ListItems] returns [ConversationItem]
-// instead, and says there what that costs a caller.
-type SessionItem = map[string]any
+// [Sessions.ListItems] yields these. The methods read the fields every item carries;
+// the payload's own fields are read directly, keyed by what the item's type declares.
+//
+// The methods exist because the alternative at each call site is a double assertion —
+// fetch, then assert — repeated per field, where a missing key and a key holding the
+// wrong type both have to end up as the same zero value anyway. The five string ones
+// read through the same helper the stream's item handling uses.
+//
+// Reading a payload field means knowing how encoding/json stored it, and the trap is
+// numbers: every JSON number in a map[string]any is a float64, so an assertion to
+// int or int64 does not fail loudly, it yields zero. [SessionItem.CreatedAt] exists because
+// created_at is the common field that trap applies to.
+//
+// float64 is also why this shape is approximate above 2^53: an integer larger than
+// that is rounded on decode, and re-marshalling one writes the rounded value back.
+// The payload fields this API is known to carry do not reach that magnitude —
+// arguments and output ride as JSON strings — but nothing in the type enforces it,
+// so a caller re-marshalling an item, or reading a field that carries an exact large
+// integer, should decode that field itself from the raw response.
+type SessionItem map[string]any
+
+// ID reports the item's own identifier. Empty when the field is absent or holds
+// anything but a string.
+func (i SessionItem) ID() string { return itemString(i, "id") }
+
+// ResponseID reports which response this item belongs to. Empty when the field
+// is absent, null, or holds anything but a string -- this route's elements are
+// declared untyped, so which of those the server sends is not something the SDK can
+// promise.
+func (i SessionItem) ResponseID() string { return itemString(i, "response_id") }
+
+// Type reports the item's kind, e.g. "message" or "function_call". It decides which
+// payload fields the item carries.
+func (i SessionItem) Type() string { return itemString(i, "type") }
+
+// Status reports the item's lifecycle state, e.g. "completed".
+func (i SessionItem) Status() string { return itemString(i, "status") }
+
+// CreatedAt reports when the server recorded the item, in Unix seconds. Zero
+// when the field is absent or holds anything but a number.
+//
+// Reads through float64 because that is what encoding/json stores every JSON number
+// as in a map[string]any. Asserting to int64 directly compiles, never panics on the
+// comma-ok form, and yields zero for every item — a silent wrong answer, which is
+// the shape this listing's accessors exist to prevent.
+func (i SessionItem) CreatedAt() int64 {
+	seconds, ok := i["created_at"].(float64)
+	if !ok {
+		return 0
+	}
+	return int64(seconds)
+}
+
+// CreatedBy reports the human actor who authored the item, and is empty for one
+// the agent, a tool, or the system produced.
+//
+// Empty covers absent, null, and a non-string alike. The vendored description marks
+// created_by optional and nullable, so a non-human item may arrive either way and
+// the difference carries no meaning; what separates a client-authored item from the
+// agent's own is whether this answers empty, which is a reason to reject one as a
+// turn's reply.
+func (i SessionItem) CreatedBy() string { return itemString(i, "created_by") }
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
 // server's defaults: the session's oldest 100 items, chronologically.

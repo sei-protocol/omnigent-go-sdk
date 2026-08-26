@@ -99,29 +99,29 @@ func (s *Sessions) List(ctx context.Context, opts ListSessionsOptions) iter.Seq2
 
 // ListItems walks a session's conversation items in transcript order.
 //
-// Read only the common fields — id, response_id, type, status, created_at,
-// created_by. [ConversationItem.Data] is always nil here, so switching on the type
-// and unmarshalling it yields the zero value rather than the payload.
+// Yields [SessionItem], which is the shape this route sends: the server spreads
+// each item's payload fields onto the item itself — role and content on a message,
+// name and arguments on a function call — beside the common id, response_id, type,
+// status and created_at. There is no data key to decode, so the elements are
+// untyped, and openapi.json declares them so too.
 //
-// This route sends the server's flatten-for-API shape, which spreads the payload's
-// own fields onto the item beside the common ones instead of nesting them under
-// data. [SessionItem] is that shape. The snapshot route,
-// [Sessions.Get] with GetSessionOptions.IncludeItems, is the one that nests, and a
-// [ConversationItem] from there does carry Data.
+// [Sessions.Get] with [GetSessionOptions.IncludeItems] is the route that nests the
+// payload under data, and it yields [ConversationItem] accordingly. Reach for that
+// one when the typed payload is what you want; reach for this one to walk a long
+// transcript without holding all of it.
 //
-// Returning [ConversationItem] for this route is a mismatch, and correcting it is
-// breaking. Until then the compiler cannot tell a caller that Data is empty, so
-// this comment has to.
-func (s *Sessions) ListItems(ctx context.Context, sessionID string, opts SessionItemsOptions) iter.Seq2[ConversationItem, error] {
+// The [SessionItem] methods read the common fields without a type assertion at each
+// call site.
+func (s *Sessions) ListItems(ctx context.Context, sessionID string, opts SessionItemsOptions) iter.Seq2[SessionItem, error] {
 	if sessionID == "" {
-		return errSeq[ConversationItem](fmt.Errorf("list session items: %w: sessionID is required", ErrInvalidArgument))
+		return errSeq[SessionItem](fmt.Errorf("list session items: %w: sessionID is required", ErrInvalidArgument))
 	}
-	return pageSeq(ctx, func(ctx context.Context, cursor string) (*Page[ConversationItem], error) {
+	return pageSeq(ctx, func(ctx context.Context, cursor string) (*Page[SessionItem], error) {
 		query := opts.query()
 		if cursor != "" {
 			query.Set("after", cursor)
 		}
-		var page Page[ConversationItem]
+		var page Page[SessionItem]
 		if err := s.client.doJSON(ctx, http.MethodGet,
 			[]string{"v1", "sessions", sessionID, "items"}, query, nil, &page); err != nil {
 			return nil, err

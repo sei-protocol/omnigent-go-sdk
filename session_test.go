@@ -342,6 +342,132 @@ func TestListRefusesEveryCutShortListing(t *testing.T) {
 	}
 }
 
+// TestListItemsYieldsThePayloadAndNotAnEmptyShell pins the shape this route sends.
+//
+// The body is upstream's own documented example of the flatten-for-API shape, from
+// the server helper that produces it: the payload's fields sit on the item beside
+// the common ones, with no data key. Typed as [ConversationItem] the payload was
+// unreachable — Data stayed nil and a caller reading it got the zero value with no
+// error — so nothing here failed and nothing said why.
+func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
+	t.Parallel()
+
+	const item = `{"id":"msg_abc","response_id":"resp_xyz","type":"message",` +
+		`"status":"completed","created_at":1753900000,"role":"assistant",` +
+		`"content":[{"type":"output_text","text":"hi"}],"model":"databricks-gpt-5-4"}`
+
+	// A second item, human-authored, so created_by has a value to be read wrongly.
+	// With only the assistant item above, every assertion about created_by is about
+	// an absent field -- which reading any wrong key also satisfies.
+	const humanItem = `{"id":"msg_human","response_id":"resp_xyz","type":"message",` +
+		`"status":"completed","created_at":1753900001,"created_by":"alice@example.com",` +
+		`"role":"user","content":[{"type":"input_text","text":"go"}]}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[` + item + `,` + humanItem + `],"has_more":false}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var got []SessionItem
+	for it, err := range client.Sessions().ListItems(t.Context(), "conv_1", SessionItemsOptions{}) {
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
+		}
+		got = append(got, it)
+	}
+	if len(got) != 2 {
+		t.Fatalf("yielded %d items, want 2", len(got))
+	}
+
+	// The common fields, through the accessors.
+	for _, tc := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"ID", got[0].ID(), "msg_abc"},
+		{"ResponseID", got[0].ResponseID(), "resp_xyz"},
+		{"Type", got[0].Type(), "message"},
+		{"Status", got[0].Status(), "completed"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+	if at := got[0].CreatedAt(); at != 1753900000 {
+		t.Errorf("CreatedAt = %d, want 1753900000", at)
+	}
+	// The example is an assistant message, which the server does not attribute to a
+	// human, so it omits the field rather than sending null.
+	if by := got[0].CreatedBy(); by != "" {
+		t.Errorf("CreatedBy = %q, want empty for an item no human authored", by)
+	}
+
+	// The human-authored item, which is what gives created_by a value to get wrong.
+	if by := got[1].CreatedBy(); by != "alice@example.com" {
+		t.Errorf("CreatedBy = %q, want alice@example.com", by)
+	}
+	if at := got[1].CreatedAt(); at != 1753900001 {
+		t.Errorf("CreatedAt = %d, want 1753900001", at)
+	}
+
+	// The payload, which is the part a ConversationItem could not reach.
+	if role, _ := got[0]["role"].(string); role != "assistant" {
+		t.Errorf(`item["role"] = %q, want "assistant"`, role)
+	}
+	content, ok := got[0]["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf(`item["content"] = %#v, want one block`, got[0]["content"])
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content block = %#v, want an object", content[0])
+	}
+	if text, _ := block["text"].(string); text != "hi" {
+		t.Errorf(`content[0]["text"] = %q, want "hi"`, text)
+	}
+}
+
+// TestSessionItemMethodsTreatAbsentAndWrongTypeAlike pins what the accessors do with a
+// field the server did not send, and one holding something else. Both yield "",
+// because a caller has no different action to take for either.
+func TestSessionItemMethodsTreatAbsentAndWrongTypeAlike(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		item SessionItem
+	}{
+		{"absent", SessionItem{}},
+		{"wrong type", SessionItem{"id": 42, "response_id": nil, "type": []any{},
+			"status": true, "created_at": "1753900000", "created_by": 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for name, got := range map[string]string{
+				"ID":         tc.item.ID(),
+				"ResponseID": tc.item.ResponseID(),
+				"Type":       tc.item.Type(),
+				"Status":     tc.item.Status(),
+				"CreatedBy":  tc.item.CreatedBy(),
+			} {
+				if got != "" {
+					t.Errorf("%s = %q, want empty", name, got)
+				}
+			}
+			if got := tc.item.CreatedAt(); got != 0 {
+				t.Errorf("CreatedAt = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestRejectedArgumentReachesTheCallerThroughTheSequence(t *testing.T) {
 	t.Parallel()
 
