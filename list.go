@@ -16,26 +16,33 @@ import (
 // "object": "list" alongside them, which the Go type already conveys, so it is
 // not carried here.
 //
-// Paging is by opaque cursor, not offset. To walk a listing, pass the previous
-// page's [Page.LastID] as the next request's After while [Page.HasMore] is true:
+// Paging is by opaque cursor, not offset: the next request carries the previous
+// page's [Page.LastID] as its After while [Page.HasMore] is true.
 //
-//	opts := omnigent.ListSessionsOptions{AgentID: agentID}
-//	for {
-//		page, err := client.ListSessions(ctx, opts)
+// No exported call returns a single Page, so this is not a loop a caller writes.
+// Every listing on this client is an [iter.Seq2] that runs it — Sessions().List and
+// its siblings — and the shape is here because the stop conditions are the part that
+// is easy to get wrong, and worth reading before trusting a listing:
+//
+//	for pages := 0; ; pages++ {
+//		page, err := fetch(ctx, cursor) // one request, one Page
 //		if err != nil {
 //			return err
 //		}
-//		for _, s := range page.Data {
+//		for _, item := range page.Data {
 //			// ...
 //		}
-//		// Two conditions, not one. HasMore is the server's answer; the empty
-//		// check is what makes the loop terminate on its own rather than on the
-//		// server's good behaviour. An empty page yields an empty LastID, so
-//		// continuing would re-request the first page forever.
-//		if !page.HasMore || len(page.Data) == 0 {
+//		// Only the server saying there is no more is a finished listing. A page
+//		// that claims more while returning nothing, or with no cursor to follow,
+//		// is a listing cut short, and breaking quietly on either makes a
+//		// truncated answer look like the whole set.
+//		if !page.HasMore {
 //			break
 //		}
-//		opts.After = page.LastID
+//		if len(page.Data) == 0 || page.LastID == "" {
+//			return fmt.Errorf("listing cut short after %d pages", pages+1)
+//		}
+//		cursor = page.LastID
 //	}
 //
 // Reversing that walk means Before and [Page.FirstID] instead. Do not derive a
@@ -59,12 +66,16 @@ type Page[T any] struct {
 	// direction — the direction is baked in, because the server applies the
 	// cursor comparison and the ordering together.
 	//
-	// It is the loop condition, and a full page does not imply another one: the
-	// server asks for one row more than the limit and reports whether it got it.
-	// That also means a true HasMore beside an empty Data is not something this
-	// server produces. Terminate on both anyway, per the loop above — an empty
-	// page carries an empty LastID, so a caller that trusts HasMore alone re-reads
-	// the first page for as long as a proxy or a future server keeps saying yes.
+	// A false value is the only finished listing. A full page does not imply
+	// another one: the server asks for one row more than the limit and reports
+	// whether it got it, so a true value beside an empty Data is not something this
+	// server produces.
+	//
+	// Do not treat that shape as an end anyway. It means the listing was cut short,
+	// and a caller that breaks quietly on it cannot tell a truncated answer from a
+	// complete one — while a caller that trusts this field alone re-reads the first
+	// page for as long as a proxy or a future server keeps saying yes. [pageSeq]
+	// yields [ErrListingUnbounded] instead, and so should a hand-rolled loop.
 	HasMore bool `json:"has_more"`
 }
 
@@ -305,17 +316,21 @@ const maxListingPages = 10_000
 // same four lines every time: read a page, yield its items, stop, carry the cursor
 // forward. Getting it wrong is quiet, so this owns it.
 //
-// Four stops, because the server decides one of them and cannot be trusted with
-// the rest. It stops when the server says there is no more; when the cursor comes
-// back empty; when a page arrives with no rows, however much more it claims; and
-// when a cursor repeats or the page count reaches [maxListingPages], which is what
-// makes the walk end whatever the server does.
+// One stop ends the walk and four refuse it. It ends when the server says there is
+// no more. It refuses — yielding [ErrListingUnbounded] — when a page claims more
+// while returning nothing, when a page claims more with no cursor to follow, and
+// when a cursor repeats or the page count reaches [maxListingPages].
 //
-// The empty-page stop is separate from the empty-cursor one on purpose. A listing
-// that reports more while returning nothing does not have to return an empty cursor
-// with it, and a proxy rewriting cursors will hand back a fresh one each time —
-// which also clears the repeat guard, leaving only the page cap, by which point
-// every row already collected is discarded as an error.
+// The split is the point. A stop the caller cannot see is indistinguishable from a
+// complete listing, so anything the walk did not reach reads as absent rather than
+// unseen. Every refusal is a shape a correct server does not produce, so a caller
+// reaching one has been handed a partial answer and needs to know.
+//
+// The empty-page refusal is checked before the cursor on purpose, because the two
+// arrive together: [Page.LastID] is empty when Data is, so a cursor check placed
+// first would absorb the empty page and end the walk quietly. A proxy rewriting
+// cursors produces the same emptiness with a fresh cursor each time, which clears
+// the repeat guard too and would otherwise leave only the page cap.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
 // issues no further request. cursor is declared inside the closure, so a second
@@ -344,7 +359,29 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			if !page.HasMore || page.LastID == "" || len(page.Data) == 0 {
+			// The server saying there is no more is the only quiet end. Every other
+			// reason to stop means the listing was cut short, and a quiet stop is
+			// indistinguishable from a complete one -- a caller acting on the
+			// difference, reclaiming every session it can find say, would treat a
+			// truncated answer as the whole set and report success over what it
+			// never saw.
+			if !page.HasMore {
+				return
+			}
+			if len(page.Data) == 0 {
+				// More promised, nothing delivered. This is the shape [Page.LastID]
+				// describes -- an empty page carries an empty cursor -- so it is
+				// checked before the cursor, which would otherwise absorb it.
+				var zero T
+				yield(zero, fmt.Errorf("%w: page %d claimed more while returning nothing",
+					ErrListingUnbounded, pages+1))
+				return
+			}
+			if page.LastID == "" {
+				// Rows, more promised, and nothing to ask for them with.
+				var zero T
+				yield(zero, fmt.Errorf("%w: page %d claimed more with no cursor to follow",
+					ErrListingUnbounded, pages+1))
 				return
 			}
 			if seen[page.LastID] {
