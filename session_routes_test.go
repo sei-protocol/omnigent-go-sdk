@@ -184,7 +184,8 @@ func TestEachSessionCallReachesItsRoute(t *testing.T) {
 			name:  "resolve elicitation posts to the session the caller named",
 			reply: `{}`,
 			call: func(s *Sessions) error {
-				return s.ResolveElicitation(t.Context(), "conv_child", "eli_1", ElicitationResult{})
+				return s.ResolveElicitation(t.Context(), "conv_child", "eli_1",
+					ElicitationResult{Action: ElicitationAccept})
 			},
 			wantMethod: http.MethodPost,
 			wantPath:   "/v1/sessions/conv_child/elicitations/eli_1/resolve",
@@ -320,6 +321,29 @@ func TestResolveAgentFollowsTheCursorAndNamesWhatItSaw(t *testing.T) {
 			t.Errorf("issued a %s request for a rejected argument", got.method)
 		}
 	})
+}
+
+// TestResolveElicitationRejectsAVerdictWithNoAction keeps the check that a verdict
+// says what it decided.
+//
+// The server answers 422 without an action, so the request is wasted either way.
+// Rejecting it here names the argument the caller got wrong instead: a verdict
+// built from an empty variable is the likely way to reach this, and a schema
+// validation error about a field the caller never wrote does not point at it.
+func TestResolveElicitationRejectsAVerdictWithNoAction(t *testing.T) {
+	t.Parallel()
+
+	client, got := routeRecorder(t, `{"queued":false}`)
+	err := client.Sessions().ResolveElicitation(t.Context(), "conv_1", "eli_1", ElicitationResult{})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), "Action") {
+		t.Errorf("error does not name the missing argument: %v", err)
+	}
+	if got.method != "" {
+		t.Errorf("issued a %s request for a rejected verdict", got.method)
+	}
 }
 
 func TestResolveOnlineRunnerPrefersAnAdvertisedHarness(t *testing.T) {

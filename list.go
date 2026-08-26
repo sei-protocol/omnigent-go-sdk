@@ -227,16 +227,19 @@ func (o ListSessionsOptions) query() url.Values {
 
 // SessionItem is one item from [Sessions.ListItems].
 //
-// It is untyped because the route sends the server's flatten-for-API shape
-// rather than the [ConversationItem] a snapshot carries: id, response_id, type
-// and status sit beside the typed payload's own fields — role and content on a
-// message, name and arguments on a function call — spread onto the same object,
-// with absent optional fields left out and no created_at at all. openapi.json
-// declares this page's elements untyped, so there is nothing generated to decode
-// them into either.
+// It is untyped because the route sends the server's flatten-for-API shape rather
+// than the [ConversationItem] a snapshot carries. Both carry id, response_id,
+// type, status and created_at; the difference is the payload. A snapshot nests it
+// under data, while this route spreads the payload's own fields — role and content
+// on a message, name and arguments on a function call — onto the same object,
+// leaving absent optional fields out. openapi.json declares this page's elements
+// untyped, so there is nothing generated to decode them into either.
 //
 // An alias rather than a defined type, so it interchanges with the same flat
 // shape on the stream, [OutputItemDoneEvent.Item].
+//
+// Nothing returns this yet — [Sessions.ListItems] returns [ConversationItem]
+// instead, and says there what that costs a caller.
 type SessionItem = map[string]any
 
 // SessionItemsOptions tunes a session-items listing. The zero value asks for the
@@ -302,11 +305,17 @@ const maxListingPages = 10_000
 // same four lines every time: read a page, yield its items, stop, carry the cursor
 // forward. Getting it wrong is quiet, so this owns it.
 //
-// Three stops, because the server decides two of them and cannot be trusted with
-// the third. It stops when the server says there is no more; when the cursor comes
-// back empty, which a listing that reports more while returning nothing would
-// otherwise loop on; and when a cursor repeats or the page count reaches
-// [maxListingPages], which is what makes the walk end whatever the server does.
+// Four stops, because the server decides one of them and cannot be trusted with
+// the rest. It stops when the server says there is no more; when the cursor comes
+// back empty; when a page arrives with no rows, however much more it claims; and
+// when a cursor repeats or the page count reaches [maxListingPages], which is what
+// makes the walk end whatever the server does.
+//
+// The empty-page stop is separate from the empty-cursor one on purpose. A listing
+// that reports more while returning nothing does not have to return an empty cursor
+// with it, and a proxy rewriting cursors will hand back a fresh one each time —
+// which also clears the repeat guard, leaving only the page cap, by which point
+// every row already collected is discarded as an error.
 //
 // The sequence starts no goroutine, so abandoning the range stops the walk and
 // issues no further request. cursor is declared inside the closure, so a second
@@ -335,7 +344,7 @@ func pageSeq[T any](ctx context.Context, fetch func(context.Context, string) (*P
 					return
 				}
 			}
-			if !page.HasMore || page.LastID == "" {
+			if !page.HasMore || page.LastID == "" || len(page.Data) == 0 {
 				return
 			}
 			if seen[page.LastID] {
