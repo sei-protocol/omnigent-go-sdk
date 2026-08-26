@@ -20,6 +20,18 @@ documents tool-call redelivery or how a `call_id` is scoped. For those, the
 citable source is a pinned permalink into upstream's code or its Python client —
 `blob/<sha>/path#Lx-Ly`, never `blob/main`, because main moves daily.
 
+Nothing public documents the body of a message input either. The events route is
+registered `include_in_schema=False`, so `openapi.json` carries no request schema
+for it, and `MessageData` describes the item the server persists rather than the
+input that produces it. The citable source is upstream's own client, which builds
+the body this module posts:
+
+- [`_sessions_chat.py:549-552`](https://github.com/omnigent-ai/omnigent/blob/85530b148b02/sdks/python-client/omnigent_client/_sessions_chat.py#L549-L552)
+  — the payload, `{"type": "message", "data": {"role": "user", "content": blocks}}`.
+- [`_sessions_chat.py:1288-1293`](https://github.com/omnigent-ai/omnigent/blob/85530b148b02/sdks/python-client/omnigent_client/_sessions_chat.py#L1288-L1293)
+  — the blocks, one `input_text` per text prompt, and none at all for an empty
+  string.
+
 Upstream states in `API.md` that this API answers to no external standard: "No
 external reference. Purpose-built for agent-native workflows." A third party has asked
 upstream to document the turn-scoped contract, in omnigent-ai/omnigent#2754, which
