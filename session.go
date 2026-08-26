@@ -110,8 +110,8 @@ func (s *Sessions) List(ctx context.Context, opts ListSessionsOptions) iter.Seq2
 // one when the typed payload is what you want; reach for this one to walk a long
 // transcript without holding all of it.
 //
-// [ItemID], [ItemResponseID], [ItemType], [ItemStatus], [ItemCreatedAt] and
-// [ItemCreatedBy] read the common fields without a type assertion at each call site.
+// The [SessionItem] methods read the common fields without a type assertion at each
+// call site.
 func (s *Sessions) ListItems(ctx context.Context, sessionID string, opts SessionItemsOptions) iter.Seq2[SessionItem, error] {
 	if sessionID == "" {
 		return errSeq[SessionItem](fmt.Errorf("list session items: %w: sessionID is required", ErrInvalidArgument))

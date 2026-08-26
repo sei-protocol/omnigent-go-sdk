@@ -391,30 +391,30 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"ItemID", ItemID(got[0]), "msg_abc"},
-		{"ItemResponseID", ItemResponseID(got[0]), "resp_xyz"},
-		{"ItemType", ItemType(got[0]), "message"},
-		{"ItemStatus", ItemStatus(got[0]), "completed"},
+		{"ID", got[0].ID(), "msg_abc"},
+		{"ResponseID", got[0].ResponseID(), "resp_xyz"},
+		{"Type", got[0].Type(), "message"},
+		{"Status", got[0].Status(), "completed"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
 		}
 	}
-	if at := ItemCreatedAt(got[0]); at != 1753900000 {
-		t.Errorf("ItemCreatedAt = %d, want 1753900000", at)
+	if at := got[0].CreatedAt(); at != 1753900000 {
+		t.Errorf("CreatedAt = %d, want 1753900000", at)
 	}
 	// The example is an assistant message, which the server does not attribute to a
 	// human, so it omits the field rather than sending null.
-	if by := ItemCreatedBy(got[0]); by != "" {
-		t.Errorf("ItemCreatedBy = %q, want empty for an item no human authored", by)
+	if by := got[0].CreatedBy(); by != "" {
+		t.Errorf("CreatedBy = %q, want empty for an item no human authored", by)
 	}
 
 	// The human-authored item, which is what gives created_by a value to get wrong.
-	if by := ItemCreatedBy(got[1]); by != "alice@example.com" {
-		t.Errorf("ItemCreatedBy = %q, want alice@example.com", by)
+	if by := got[1].CreatedBy(); by != "alice@example.com" {
+		t.Errorf("CreatedBy = %q, want alice@example.com", by)
 	}
-	if at := ItemCreatedAt(got[1]); at != 1753900001 {
-		t.Errorf("ItemCreatedAt = %d, want 1753900001", at)
+	if at := got[1].CreatedAt(); at != 1753900001 {
+		t.Errorf("CreatedAt = %d, want 1753900001", at)
 	}
 
 	// The payload, which is the part a ConversationItem could not reach.
@@ -434,10 +434,10 @@ func TestListItemsYieldsThePayloadAndNotAnEmptyShell(t *testing.T) {
 	}
 }
 
-// TestItemAccessorsTreatAbsentAndWrongTypeAlike pins what the accessors do with a
+// TestSessionItemMethodsTreatAbsentAndWrongTypeAlike pins what the accessors do with a
 // field the server did not send, and one holding something else. Both yield "",
 // because a caller has no different action to take for either.
-func TestItemAccessorsTreatAbsentAndWrongTypeAlike(t *testing.T) {
+func TestSessionItemMethodsTreatAbsentAndWrongTypeAlike(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -451,18 +451,18 @@ func TestItemAccessorsTreatAbsentAndWrongTypeAlike(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			for name, got := range map[string]string{
-				"ItemID":         ItemID(tc.item),
-				"ItemResponseID": ItemResponseID(tc.item),
-				"ItemType":       ItemType(tc.item),
-				"ItemStatus":     ItemStatus(tc.item),
-				"ItemCreatedBy":  ItemCreatedBy(tc.item),
+				"ID":         tc.item.ID(),
+				"ResponseID": tc.item.ResponseID(),
+				"Type":       tc.item.Type(),
+				"Status":     tc.item.Status(),
+				"CreatedBy":  tc.item.CreatedBy(),
 			} {
 				if got != "" {
 					t.Errorf("%s = %q, want empty", name, got)
 				}
 			}
-			if got := ItemCreatedAt(tc.item); got != 0 {
-				t.Errorf("ItemCreatedAt = %d, want 0", got)
+			if got := tc.item.CreatedAt(); got != 0 {
+				t.Errorf("CreatedAt = %d, want 0", got)
 			}
 		})
 	}
